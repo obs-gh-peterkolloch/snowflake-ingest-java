@@ -70,7 +70,7 @@ class ChannelCache<T> {
           // We need to compare the channel sequencer in case the old channel was already been
           // removed
           return channelInCache != null
-                  && channelInCache.getChannelSequencer() == channel.getChannelSequencer()
+                  && channelInCache.getChannelSequencer().equals(channel.getChannelSequencer())
                   && v.remove(channel.getName()) != null
                   && v.isEmpty()
               ? null
