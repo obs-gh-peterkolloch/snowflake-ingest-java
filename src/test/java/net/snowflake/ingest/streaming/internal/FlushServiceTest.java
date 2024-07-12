@@ -731,6 +731,8 @@ public class FlushServiceTest {
     client.uploadThroughput = Mockito.mock(Meter.class);
     client.blobSizeHistogram = Mockito.mock(Histogram.class);
     client.blobRowCountHistogram = Mockito.mock(Histogram.class);
+    client.blobTableCountHistogram = Mockito.mock(Histogram.class);
+    client.blobChunkEntropyHistogram = Mockito.mock(Histogram.class);
 
     BlobMetadata blobMetadata = testContext.buildAndUpload();
 

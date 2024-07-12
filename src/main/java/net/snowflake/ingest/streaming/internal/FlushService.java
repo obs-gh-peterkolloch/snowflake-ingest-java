@@ -35,6 +35,8 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.DoubleStream;
+
 import javax.crypto.BadPaddingException;
 import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
@@ -582,6 +584,22 @@ class FlushService<T> {
       this.owningClient.blobSizeHistogram.update(blob.length);
       this.owningClient.blobRowCountHistogram.update(
           metadata.stream().mapToLong(i -> i.getEpInfo().getRowCount()).sum());
+
+      // The number of chunks matches the number of tables in the blob. See BlobBuilder.java for
+      // how this is constructed, but note the number of tables != number of channels, since we can
+      // open multiple channels to the same table.
+      this.owningClient.blobTableCountHistogram.update(metadata.size());
+
+      // We might also care about the relative size of chunks within a blob. For example, let's say
+      // the chunks are size 7/1/1, this might be better than 3/3/3. Quantify this with entropy,
+      // where probability is the chance a random byte belongs to a chunk. Multiply by 100 since
+      // Dropwizard histograms only supports int/long.
+      double totalChunkLength = metadata.stream().mapToDouble(i -> i.getChunkLength()).sum();
+      if (totalChunkLength > 0) {
+        DoubleStream prob = metadata.stream().mapToDouble(i -> i.getChunkLength().doubleValue() / totalChunkLength);
+        double entropy = prob.map(p -> p > 0 ? -p * Math.log(p) / Math.log(2) : 0).sum();
+        this.owningClient.blobChunkEntropyHistogram.update((long)(entropy * 100.0));
+      }
     }
 
     logger.logInfo(

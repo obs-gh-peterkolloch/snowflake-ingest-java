@@ -128,6 +128,8 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
   MetricRegistry metrics;
   Histogram blobSizeHistogram; // Histogram for blob size after compression
   Histogram blobRowCountHistogram; // Histogram for blob row count
+  Histogram blobTableCountHistogram; // Histogram for number of tables in a blob
+  Histogram blobChunkEntropyHistogram; // Histogram for entropy of chunks in a blob (E/100)
   Histogram cpuHistogram; // Histogram for jvm process cpu usage
   Timer flushLatency; // Latency for end to end flushing
   Timer buildLatency; // Latency for building a blob
@@ -1006,6 +1008,8 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
       blobSizeHistogram = metrics.histogram(MetricRegistry.name("blob", "size", "histogram"));
       blobRowCountHistogram =
           metrics.histogram(MetricRegistry.name("blob", "row", "count", "histogram"));
+      blobTableCountHistogram = metrics.histogram(MetricRegistry.name("blob", "table", "count", "histogram"));
+      blobChunkEntropyHistogram = metrics.histogram(MetricRegistry.name("blob", "chunk", "entropy", "histogram"));
     }
 
     if (this.parameterProvider.hasEnabledSnowpipeStreamingMetrics()) {
