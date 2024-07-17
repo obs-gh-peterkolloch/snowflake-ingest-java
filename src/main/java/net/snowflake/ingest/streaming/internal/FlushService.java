@@ -11,6 +11,7 @@ import static net.snowflake.ingest.utils.Constants.MAX_THREAD_COUNT;
 import static net.snowflake.ingest.utils.Constants.THREAD_SHUTDOWN_TIMEOUT_IN_SEC;
 import static net.snowflake.ingest.utils.Utils.getStackTrace;
 
+import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 import com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
@@ -599,6 +600,12 @@ class FlushService<T> {
         DoubleStream prob = metadata.stream().mapToDouble(i -> i.getChunkLength().doubleValue() / totalChunkLength);
         double entropy = prob.map(p -> p > 0 ? -p * Math.log(p) / Math.log(2) : 0).sum();
         this.owningClient.blobChunkEntropyHistogram.update((long)(entropy * 100.0));
+      }
+
+      for (ChunkMetadata chunkMetadata: metadata) {
+        String metricBaseName = MetricRegistry.name("table_blob", "size", "histogram");
+        String metricName = String.format("%s,db=%s,schema=%s,table=%s", metricBaseName, chunkMetadata.getDBName(), chunkMetadata.getSchemaName(), chunkMetadata.getTableName());
+        this.owningClient.metrics.histogram(metricName).update(chunkMetadata.getChunkLength());
       }
     }
 
