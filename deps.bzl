@@ -26,7 +26,6 @@ ARTIFACTS = [
     "commons-io:commons-io:2.15.1",
     "org.apache.commons:commons-configuration2:2.10.1",
     "org.apache.commons:commons-text:1.11.0",
-    "commons-logging:commons-logging:1.3.1",
     "org.apache.hadoop:hadoop-common:3.3.6",
     "org.apache.hadoop.thirdparty:hadoop-shaded-protobuf_3_7:1.1.1",
     "org.apache.hadoop:hadoop-annotations:3.3.6",
@@ -72,13 +71,57 @@ ARTIFACTS = [
     "org.slf4j:slf4j-simple:1.7.36",
 ]
 
-def snowflake_ingest_java_deps():
+EXCLUDED_ARTIFACTS = [
+    "ch.qos.reload4j:reload4j",
+    "com.github.pjfanning:jersey-json",
+    "com.jcraft:jsch",
+    "com.sun.jersey:jersey-core",
+    "com.sun.jersey:jersey-server",
+    "com.sun.jersey:jersey-servlet",
+    "dnsjava:dnsjava",
+    "javax.activation:activation",
+    "javax.servlet:javax.servlet-api",
+    "javax.servlet.jsp:jsp-api",
+    "org.apache.avro:avro",
+    "org.apache.curator:curator-client",
+    "org.apache.curator:curator-recipes",
+    "org.apache.hadoop:hadoop-auth",
+    "org.apache.httpcomponents:httpclient",
+    "org.apache.kerby:kerb-core",
+    "org.apache.zookeeper:zookeeper",
+    "org.eclipse.jetty:jetty-server",
+    "org.eclipse.jetty:jetty-servlet",
+    "org.eclipse.jetty:jetty-util",
+    "org.eclipse.jetty:jetty-webapp",
+    "org.slf4j:slf4j-log4j12",
+    "org.slf4j:slf4j-reload4j",
+    "org.eclipse.aether:aether-util",
+]
 
+def snowflake_ingest_java_deps():
     maven_install(
         name = "snowpipe_maven",
         artifacts = ARTIFACTS,
         repositories = [
             "https://repo1.maven.org/maven2",
         ],
+        excluded_artifacts = EXCLUDED_ARTIFACTS,
     )
 
+def make_all_unit_tests(srcs, resources, deps, excludes = [], runtime_deps = []):
+    native.java_library(
+        name = "testlib",
+        srcs = srcs,
+        resources = resources,
+        visibility = ["//visibility:public"],
+        deps = deps,
+    )
+
+    for src in srcs:
+        filename_noext = src.split(".")[0]
+        elems = filename_noext.split("/")
+        # select test classes that are not explicitly excluded, and ends with Test. Integration tests
+        # end with IT but do not currently work under bazel.
+        if elems[-1] not in excludes and elems[-1].endswith("Test"):
+            clname = ".".join(elems[3:])
+            native.java_test(name = clname, test_class = clname, runtime_deps = runtime_deps + [":testlib"], size = "medium")
