@@ -21,4 +21,3 @@ rules_jvm_external_setup()
 load(":deps.bzl", "snowflake_ingest_java_deps")
 
 snowflake_ingest_java_deps()
-
