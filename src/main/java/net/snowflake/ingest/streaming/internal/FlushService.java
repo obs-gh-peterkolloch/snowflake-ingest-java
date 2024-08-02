@@ -561,6 +561,11 @@ class FlushService<T> {
     return upload(blobPath, blob.blobBytes, blob.chunksMetadataList, blob.blobStats);
   }
 
+  static String tableBlobMetricName(String dbName, String schemaName, String tableName) {
+    String metricBaseName = MetricRegistry.name("table_blob", "size", "histogram");
+    return String.format("%s,db=%s,schema=%s,table=%s", metricBaseName, dbName, schemaName, tableName);
+  }
+
   /**
    * Upload a blob to Streaming Ingest dedicated stage
    *
@@ -603,8 +608,7 @@ class FlushService<T> {
       }
 
       for (ChunkMetadata chunkMetadata: metadata) {
-        String metricBaseName = MetricRegistry.name("table_blob", "size", "histogram");
-        String metricName = String.format("%s,db=%s,schema=%s,table=%s", metricBaseName, chunkMetadata.getDBName(), chunkMetadata.getSchemaName(), chunkMetadata.getTableName());
+        String metricName = tableBlobMetricName(chunkMetadata.getDBName(), chunkMetadata.getSchemaName(), chunkMetadata.getTableName());
         this.owningClient.metrics.histogram(metricName).update(chunkMetadata.getChunkLength());
       }
     }
