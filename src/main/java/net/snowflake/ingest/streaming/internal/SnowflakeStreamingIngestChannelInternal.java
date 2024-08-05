@@ -296,6 +296,10 @@ class SnowflakeStreamingIngestChannelInternal<T> implements SnowflakeStreamingIn
                   this.owningClient.verifyChannelsAreFullyCommitted(
                       Collections.singletonList(this));
 
+              // Deregister per-table metrics.
+              String metricName = FlushService.tableBlobMetricName(getDBName(), getSchemaName(), getTableName());
+              this.owningClient.metrics.remove(metricName);
+
               this.rowBuffer.close("close");
               this.owningClient.removeChannelIfSequencersMatch(this);
 
