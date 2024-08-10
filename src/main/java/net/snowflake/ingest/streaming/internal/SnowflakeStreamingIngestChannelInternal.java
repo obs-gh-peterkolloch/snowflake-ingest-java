@@ -531,4 +531,11 @@ class SnowflakeStreamingIngestChannelInternal<T> implements SnowflakeStreamingIn
   public ChannelFlushContext getChannelContext() {
     return channelFlushContext;
   }
+
+  /** Request the client to flush this channel soon */
+  @Override
+  public void setNeedFlush() {
+    this.owningClient.setNeedFlush(this.channelFlushContext.getFullyQualifiedTableName());
+  }
+
 }

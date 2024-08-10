@@ -287,4 +287,9 @@ public interface SnowflakeStreamingIngestChannel {
    * @return map representing Column Name to Column Properties
    */
   Map<String, ColumnProperties> getTableSchema();
+
+  /**
+   * Requests owning client to flush this channel as soon as possible
+   */
+  void setNeedFlush();
 }
