@@ -69,8 +69,8 @@ java_library(
 make_all_unit_tests(
     srcs = glob(["src/test/java/**/*.java"]),
     excludes = [
-        "AbstractDataTypeTest", # not an actual test - used as base class for integration tests
-        "UserAgentTest", # fails due to version string mismatch
+        "AbstractDataTypeTest",  # not an actual test - used as base class for integration tests
+        "UserAgentTest",  # fails due to version string mismatch
     ],
     resources = glob(["src/test/resources/**"]),
     runtime_deps = [
@@ -81,6 +81,7 @@ make_all_unit_tests(
         "@snowpipe_maven//:com_fasterxml_jackson_core_jackson_annotations",
         "@snowpipe_maven//:com_fasterxml_jackson_core_jackson_core",
         "@snowpipe_maven//:com_fasterxml_jackson_core_jackson_databind",
+        "@snowpipe_maven//:com_github_luben_zstd_jni",
         "@snowpipe_maven//:commons_beanutils_commons_beanutils",
         "@snowpipe_maven//:commons_cli_commons_cli",
         "@snowpipe_maven//:commons_codec_commons_codec",
@@ -116,6 +117,5 @@ make_all_unit_tests(
         "@snowpipe_maven//:org_powermock_powermock_module_junit4_common",
         "@snowpipe_maven//:org_powermock_powermock_reflect",
         "@snowpipe_maven//:org_slf4j_slf4j_simple",
-        "@snowpipe_maven//:com_github_luben_zstd_jni",
     ],
 )

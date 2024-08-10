@@ -120,6 +120,7 @@ def make_all_unit_tests(srcs, resources, deps, excludes = [], runtime_deps = [])
     for src in srcs:
         filename_noext = src.split(".")[0]
         elems = filename_noext.split("/")
+
         # select test classes that are not explicitly excluded, and ends with Test. Integration tests
         # end with IT but do not currently work under bazel.
         if elems[-1] not in excludes and elems[-1].endswith("Test"):
