@@ -227,6 +227,8 @@ class SnowflakeStreamingIngestChannelInternal<T> implements SnowflakeStreamingIn
     if (data != null) {
       data.setChannelContext(channelFlushContext);
     }
+    // mark the channel as no longer needing flush
+    this.channelState.setNeedFlush(false);
     return data;
   }
 
@@ -284,6 +286,7 @@ class SnowflakeStreamingIngestChannelInternal<T> implements SnowflakeStreamingIn
       return CompletableFuture.completedFuture(null);
     }
 
+    this.setNeedFlush();
     return this.owningClient.flush(false);
   }
 
@@ -416,6 +419,7 @@ class SnowflakeStreamingIngestChannelInternal<T> implements SnowflakeStreamingIn
     // if a large number of rows are inserted
     if (this.rowBuffer.getSize()
         >= this.owningClient.getParameterProvider().getMaxChannelSizeInBytes()) {
+      this.setNeedFlush();
       this.owningClient.setNeedFlush(this.channelFlushContext.getFullyQualifiedTableName());
     }
 
@@ -534,7 +538,13 @@ class SnowflakeStreamingIngestChannelInternal<T> implements SnowflakeStreamingIn
   /** Request the client to flush this channel soon */
   @Override
   public void setNeedFlush() {
+    this.channelState.setNeedFlush(true);
     this.owningClient.setNeedFlush(this.channelFlushContext.getFullyQualifiedTableName());
+  }
+
+  @Override
+  public boolean getNeedFlush() {
+    return this.channelState.getNeedFlush();
   }
 
 }

@@ -834,6 +834,7 @@ public class SnowflakeStreamingIngestChannelTest {
     Mockito.doReturn(response).when(client).getChannelsStatus(Mockito.any());
 
     Assert.assertFalse(channel.isClosed());
+    Assert.assertFalse(channel.getNeedFlush());
     channel.close().get();
     Assert.assertTrue(channel.isClosed());
 
@@ -868,6 +869,7 @@ public class SnowflakeStreamingIngestChannelTest {
     Mockito.doReturn(response).when(client).getChannelsStatus(Mockito.any());
 
     Assert.assertFalse(channel.isClosed());
+    Assert.assertFalse(channel.getNeedFlush());
     Mockito.doNothing().when(client).dropChannel(Mockito.any());
     channel.close(true).get();
     Assert.assertTrue(channel.isClosed());

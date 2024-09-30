@@ -176,18 +176,17 @@ class FlushService<T> {
    * @return
    */
   private CompletableFuture<Void> distributeFlush(
-      boolean isForce, Set<String> tablesToFlush, Long flushStartTime) {
+      boolean isForce, Set<String> tablesToFlush, Long flushStartTime, boolean flushAllChannels) {
     return CompletableFuture.runAsync(
         () -> {
           logFlushTask(isForce, tablesToFlush, flushStartTime);
-          distributeFlushTasks(tablesToFlush);
+          distributeFlushTasks(tablesToFlush, flushAllChannels);
           long prevFlushEndTime = System.currentTimeMillis();
           this.lastFlushTime = prevFlushEndTime;
           this.isNeedFlush = false;
           tablesToFlush.forEach(
               table -> {
                 this.channelCache.setLastFlushTime(table, prevFlushEndTime);
-                this.channelCache.setNeedFlush(table, false);
               });
         },
         this.flushWorker);
@@ -297,13 +296,14 @@ class FlushService<T> {
       }
     }
 
+    final boolean flushAllChannels = isForce || this.owningClient.getParameterProvider().getMaxChunksInBlob() > 1;
     if (isForce
         || (!DISABLE_BACKGROUND_FLUSH
             && !isTestMode()
             && tablesToFlush != null
             && !tablesToFlush.isEmpty())) {
       return this.statsFuture()
-          .thenCompose((v) -> this.distributeFlush(isForce, tablesToFlush, flushStartTime))
+          .thenCompose((v) -> this.distributeFlush(isForce, tablesToFlush, flushStartTime, flushAllChannels))
           .thenCompose((v) -> this.registerFuture());
     }
     return this.statsFuture();
@@ -389,7 +389,7 @@ class FlushService<T> {
    *
    * @param tablesToFlush list of tables to flush
    */
-  void distributeFlushTasks(Set<String> tablesToFlush) {
+  void distributeFlushTasks(Set<String> tablesToFlush, boolean flushAllChannels) {
     Iterator<
             Map.Entry<
                 String, ConcurrentHashMap<String, SnowflakeStreamingIngestChannelInternal<T>>>>
@@ -433,7 +433,7 @@ class FlushService<T> {
           table.values().parallelStream()
               .forEach(
                   channel -> {
-                    if (channel.isValid()) {
+                    if (channel.isValid() && (flushAllChannels || channel.getNeedFlush())) {
                       ChannelData<T> data = channel.getData();
                       if (data != null) {
                         channelsDataPerTable.add(data);
@@ -724,9 +724,6 @@ class FlushService<T> {
    */
   void setNeedFlush(String fullyQualifiedTableName) {
     this.isNeedFlush = true;
-    if (this.owningClient.getParameterProvider().getMaxChunksInBlob() == 1) {
-      this.channelCache.setNeedFlush(fullyQualifiedTableName, true);
-    }
   }
 
   /**

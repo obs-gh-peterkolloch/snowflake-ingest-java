@@ -11,6 +11,8 @@ class ChannelRuntimeState {
   // Indicates whether the channel is still valid
   private volatile boolean isValid;
 
+  private volatile boolean needFlush;
+
   // The channel's current start offset token
   private volatile String startOffsetToken;
 
@@ -28,6 +30,7 @@ class ChannelRuntimeState {
     this.endOffsetToken = endOffsetToken;
     this.rowSequencer = new AtomicLong(rowSequencer);
     this.isValid = isValid;
+    this.needFlush = false;
   }
 
   /**
@@ -93,5 +96,13 @@ class ChannelRuntimeState {
   /** Get the insert timestamp of the last row in the current row buffer */
   Long getLastInsertInMs() {
     return this.lastInsertInMs;
+  }
+
+  public void setNeedFlush(boolean needFlush) {
+    this.needFlush = needFlush;
+  }
+
+  public boolean getNeedFlush() {
+    return this.needFlush;
   }
 }
