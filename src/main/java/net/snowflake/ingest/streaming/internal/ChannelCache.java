@@ -29,11 +29,9 @@ class ChannelCache<T> {
   /** Flush information for each table including last flush time and if flush is needed */
   static class FlushInfo {
     final long lastFlushTime;
-    final boolean needFlush;
 
-    FlushInfo(long lastFlushTime, boolean needFlush) {
+    FlushInfo(long lastFlushTime) {
       this.lastFlushTime = lastFlushTime;
-      this.needFlush = needFlush;
     }
   }
 
@@ -53,7 +51,7 @@ class ChannelCache<T> {
     // Update the last flush time for the table, add jitter to avoid all channels flush at the same
     // time when the blobs are not interleaved
     this.tableFlushInfo.putIfAbsent(
-        channel.getFullyQualifiedTableName(), new FlushInfo(System.currentTimeMillis(), false));
+        channel.getFullyQualifiedTableName(), new FlushInfo(System.currentTimeMillis()));
 
     SnowflakeStreamingIngestChannelInternal<T> oldChannel =
         channels.put(channel.getName(), channel);
@@ -96,7 +94,7 @@ class ChannelCache<T> {
                 ErrorCode.INTERNAL_ERROR,
                 String.format("Last flush time for table %s not found", fullyQualifiedTableName));
           }
-          return new FlushInfo(lastFlushTime, v.needFlush);
+          return new FlushInfo(lastFlushTime);
         });
   }
 
@@ -107,32 +105,14 @@ class ChannelCache<T> {
    * @return need flush flag
    */
   boolean getNeedFlush(String fullyQualifiedTableName) {
-    FlushInfo tableFlushInfo = this.tableFlushInfo.get(fullyQualifiedTableName);
-    if (tableFlushInfo == null) {
+    ConcurrentHashMap<String, SnowflakeStreamingIngestChannelInternal<T>> channels = this.cache
+        .get(fullyQualifiedTableName);
+    if (channels == null || channels.isEmpty()) {
       throw new SFException(
           ErrorCode.INTERNAL_ERROR,
-          String.format("Need flush flag for table %s not found", fullyQualifiedTableName));
+          String.format("Channels for table %s not found", fullyQualifiedTableName));
     }
-    return tableFlushInfo.needFlush;
-  }
-
-  /**
-   * Set need flush flag for a table
-   *
-   * @param fullyQualifiedTableName fully qualified table name
-   * @param needFlush need flush flag
-   */
-  void setNeedFlush(String fullyQualifiedTableName, boolean needFlush) {
-    this.tableFlushInfo.compute(
-        fullyQualifiedTableName,
-        (k, v) -> {
-          if (v == null) {
-            throw new SFException(
-                ErrorCode.INTERNAL_ERROR,
-                String.format("Need flush flag for table %s not found", fullyQualifiedTableName));
-          }
-          return new FlushInfo(v.lastFlushTime, needFlush);
-        });
+    return channels.values().stream().anyMatch(SnowflakeStreamingIngestChannelInternal<T>::getNeedFlush);
   }
 
   /** Returns an immutable set view of the mappings contained in the channel cache. */

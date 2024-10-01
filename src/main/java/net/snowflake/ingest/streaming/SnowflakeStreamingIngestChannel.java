@@ -292,4 +292,6 @@ public interface SnowflakeStreamingIngestChannel {
    * Requests owning client to flush this channel as soon as possible
    */
   void setNeedFlush();
+
+  boolean getNeedFlush();
 }

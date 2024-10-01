@@ -481,11 +481,11 @@ public class FlushServiceTest {
 
     // Nothing to flush
     flushService.flush(false).get();
-    Mockito.verify(flushService, Mockito.times(0)).distributeFlushTasks(Mockito.any());
+    Mockito.verify(flushService, Mockito.times(0)).distributeFlushTasks(Mockito.any(), Mockito.eq(true));
 
     // Force = true flushes
     flushService.flush(true).get();
-    Mockito.verify(flushService, Mockito.times(1)).distributeFlushTasks(Mockito.any());
+    Mockito.verify(flushService, Mockito.times(1)).distributeFlushTasks(Mockito.any(), Mockito.eq(true));
 
     IntStream.range(0, numChannels)
         .forEach(
@@ -497,7 +497,7 @@ public class FlushServiceTest {
     // isNeedFlush = true flushes
     flushService.setNeedFlush(getFullyQualifiedTableName(0));
     flushService.flush(false).get();
-    Mockito.verify(flushService, Mockito.times(2)).distributeFlushTasks(Mockito.any());
+    Mockito.verify(flushService, Mockito.times(2)).distributeFlushTasks(Mockito.any(), Mockito.eq(true));
     Assert.assertFalse(flushService.isNeedFlush);
     Assert.assertNotEquals(
         maxLastFlushTime, channelCache.getLastFlushTime(getFullyQualifiedTableName(0)));
@@ -514,7 +514,7 @@ public class FlushServiceTest {
     // lastFlushTime causes flush
     flushService.lastFlushTime = 0L;
     flushService.flush(false).get();
-    Mockito.verify(flushService, Mockito.times(3)).distributeFlushTasks(Mockito.any());
+    Mockito.verify(flushService, Mockito.times(3)).distributeFlushTasks(Mockito.any(), Mockito.eq(true));
     Assert.assertTrue(flushService.lastFlushTime > 0);
     Assert.assertNotEquals(
         maxLastFlushTime, channelCache.getLastFlushTime(getFullyQualifiedTableName(0)));
@@ -544,14 +544,15 @@ public class FlushServiceTest {
     IntStream.range(0, numChannels)
         .forEach(
             i -> {
-              addChannel(testContext, i, 1L);
+              SnowflakeStreamingIngestChannelInternal<List<List<Object>>> channel = addChannel(testContext, i, 1L);
               channelCache.setLastFlushTime(getFullyQualifiedTableName(i), maxLastFlushTime);
               if (i % 2 == 0) {
+                channel.setNeedFlush();
                 flushService.setNeedFlush(getFullyQualifiedTableName(i));
               }
             });
     flushService.flush(false).get();
-    Mockito.verify(flushService, Mockito.times(1)).distributeFlushTasks(Mockito.any());
+    Mockito.verify(flushService, Mockito.times(1)).distributeFlushTasks(Mockito.any(), Mockito.eq(false));
     IntStream.range(0, numChannels)
         .forEach(
             i -> {
@@ -571,11 +572,21 @@ public class FlushServiceTest {
     IntStream.range(0, numChannels)
         .forEach(
             i -> {
+              String table = getFullyQualifiedTableName(i);
               channelCache.setLastFlushTime(
-                  getFullyQualifiedTableName(i), i % 2 == 0 ? 0L : maxLastFlushTime);
+                  table, i % 2 == 0 ? 0L : maxLastFlushTime);
+              if (i % 2 != 0) {
+                channelCache.entrySet().forEach(e -> {
+                  if (e.getKey() == table) {
+                    e.getValue().forEach((name, channel) -> {
+                      channel.setNeedFlush();
+                    });
+                  }
+                });
+              }
             });
     flushService.flush(false).get();
-    Mockito.verify(flushService, Mockito.times(2)).distributeFlushTasks(Mockito.any());
+    Mockito.verify(flushService, Mockito.times(2)).distributeFlushTasks(Mockito.any(), Mockito.eq(false));
     IntStream.range(0, numChannels)
         .forEach(
             i -> {
