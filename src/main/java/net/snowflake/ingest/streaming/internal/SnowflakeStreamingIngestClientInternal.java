@@ -43,6 +43,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -71,6 +72,7 @@ import net.snowflake.ingest.utils.ParameterProvider;
 import net.snowflake.ingest.utils.SFException;
 import net.snowflake.ingest.utils.SnowflakeURL;
 import net.snowflake.ingest.utils.Utils;
+import org.apache.parquet.column.ParquetProperties;
 
 /**
  * The first version of implementation for SnowflakeStreamingIngestClient. The client internally
@@ -109,16 +111,16 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
   private final FlushService<T> flushService;
 
   // Reference to storage manager
-  private final IStorageManager<T, ?> storageManager;
+  private IStorageManager storageManager;
 
   // Indicates whether the client has closed
   private volatile boolean isClosed;
 
-  // Indicates wheter the client is streaming to Iceberg tables
-  private final boolean isIcebergMode;
-
   // Indicates whether the client is under test mode
   private final boolean isTestMode;
+
+  // Stores encryptionkey per table: FullyQualifiedTableName -> EncryptionKey
+  private final Map<FullyQualifiedTableName, EncryptionKey> encryptionKeysPerTable;
 
   // Performance testing related metrics
   MetricRegistry metrics;
@@ -154,7 +156,6 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
    * @param prop connection properties
    * @param httpClient http client for sending request
    * @param isTestMode whether we're under test mode
-   * @param isIcebergMode whether we're streaming to Iceberg tables
    * @param requestBuilder http request builder
    * @param parameterOverrides parameters we override in case we want to set different values
    */
@@ -163,21 +164,21 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
       SnowflakeURL accountURL,
       Properties prop,
       CloseableHttpClient httpClient,
-      boolean isIcebergMode,
       boolean isTestMode,
       RequestBuilder requestBuilder,
       Map<String, Object> parameterOverrides) {
-    this.parameterProvider = new ParameterProvider(parameterOverrides, prop, isIcebergMode);
-    this.internalParameterProvider = new InternalParameterProvider(isIcebergMode);
+    this.parameterProvider = new ParameterProvider(parameterOverrides, prop);
+    this.internalParameterProvider =
+        new InternalParameterProvider(parameterProvider.isEnableIcebergStreaming());
 
     this.name = name;
     String accountName = accountURL == null ? null : accountURL.getAccount();
-    this.isIcebergMode = isIcebergMode;
     this.isTestMode = isTestMode;
     this.httpClient = httpClient == null ? HttpUtil.getHttpClient(accountName) : httpClient;
     this.channelCache = new ChannelCache<>();
     this.isClosed = false;
     this.requestBuilder = requestBuilder;
+    this.encryptionKeysPerTable = new ConcurrentHashMap<>();
 
     if (!isTestMode) {
       // Setup request builder for communication with the server side
@@ -225,10 +226,13 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
               prop.get(USER).toString(),
               credential,
               this.httpClient,
+              parameterProvider.isEnableIcebergStreaming(),
               String.format("%s_%s", this.name, System.currentTimeMillis()));
 
       logger.logInfo("Using {} for authorization", this.requestBuilder.getAuthType());
+    }
 
+    if (this.requestBuilder != null) {
       // Setup client telemetries if needed
       this.setupMetricsForClient();
     }
@@ -236,10 +240,10 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
     this.snowflakeServiceClient = new SnowflakeServiceClient(this.httpClient, this.requestBuilder);
 
     this.storageManager =
-        isIcebergMode
-            ? new ExternalVolumeManager<>(
-                isTestMode, this.role, this.name, this.snowflakeServiceClient)
-            : new InternalStageManager<>(
+        parameterProvider.isEnableIcebergStreaming()
+            ? new SubscopedTokenExternalVolumeManager(
+                this.role, this.name, this.snowflakeServiceClient)
+            : new InternalStageManager(
                 isTestMode, this.role, this.name, this.snowflakeServiceClient);
 
     try {
@@ -266,7 +270,6 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
    * @param accountURL Snowflake account url
    * @param prop connection properties
    * @param parameterOverrides map of parameters to override for this client
-   * @param isIcebergMode whether we're streaming to Iceberg tables
    * @param isTestMode indicates whether it's under test mode
    */
   public SnowflakeStreamingIngestClientInternal(
@@ -274,17 +277,16 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
       SnowflakeURL accountURL,
       Properties prop,
       Map<String, Object> parameterOverrides,
-      boolean isIcebergMode,
       boolean isTestMode) {
-    this(name, accountURL, prop, null, isIcebergMode, isTestMode, null, parameterOverrides);
+    this(name, accountURL, prop, null, isTestMode, null, parameterOverrides);
   }
 
   /*** Constructor for TEST ONLY
    *
    * @param name the name of the client
    */
-  SnowflakeStreamingIngestClientInternal(String name, boolean isIcebergMode) {
-    this(name, null, null, null, isIcebergMode, true, null, new HashMap<>());
+  SnowflakeStreamingIngestClientInternal(String name) {
+    this(name, null, null, null, true, null, new HashMap<>());
   }
 
   // TESTING ONLY - inject the request builder
@@ -337,6 +339,7 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
         request.getFullyQualifiedTableName(),
         getName());
 
+    OpenChannelResponse response = null;
     try {
       OpenChannelRequestInternal openChannelRequest =
           new OpenChannelRequestInternal(
@@ -347,50 +350,68 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
               request.getTableName(),
               request.getChannelName(),
               Constants.WriteMode.CLOUD_STORAGE,
+              this.parameterProvider.isEnableIcebergStreaming(),
               request.getOffsetToken());
-      OpenChannelResponse response = snowflakeServiceClient.openChannel(openChannelRequest);
-
-      logger.logInfo(
-          "Open channel request succeeded, channel={}, table={}, clientSequencer={},"
-              + " rowSequencer={}, client={}",
-          request.getChannelName(),
-          request.getFullyQualifiedTableName(),
-          response.getClientSequencer(),
-          response.getRowSequencer(),
-          getName());
-
-      // Channel is now registered, add it to the in-memory channel pool
-      SnowflakeStreamingIngestChannelInternal<T> channel =
-          SnowflakeStreamingIngestChannelFactory.<T>builder(response.getChannelName())
-              .setDBName(response.getDBName())
-              .setSchemaName(response.getSchemaName())
-              .setTableName(response.getTableName())
-              .setOffsetToken(response.getOffsetToken())
-              .setRowSequencer(response.getRowSequencer())
-              .setChannelSequencer(response.getClientSequencer())
-              .setOwningClient(this)
-              .setEncryptionKey(response.getEncryptionKey())
-              .setEncryptionKeyId(response.getEncryptionKeyId())
-              .setOnErrorOption(request.getOnErrorOption())
-              .setDefaultTimezone(request.getDefaultTimezone())
-              .setOffsetTokenVerificationFunction(request.getOffsetTokenVerificationFunction())
-              .build();
-
-      // Setup the row buffer schema
-      channel.setupSchema(response.getTableColumns());
-
-      // Add channel to the channel cache
-      this.channelCache.addChannel(channel);
-      this.storageManager.addStorage(
-          response.getDBName(),
-          response.getSchemaName(),
-          response.getTableName(),
-          response.getExternalVolumeLocation());
-
-      return channel;
+      response = snowflakeServiceClient.openChannel(openChannelRequest);
     } catch (IOException | IngestResponseException e) {
       throw new SFException(e, ErrorCode.OPEN_CHANNEL_FAILURE, e.getMessage());
     }
+
+    if (parameterProvider.isEnableIcebergStreaming()) {
+      if (response.getTableColumns().stream().anyMatch(c -> c.getSourceIcebergDataType() == null)) {
+        throw new SFException(
+            ErrorCode.INTERNAL_ERROR, "Iceberg table columns must have sourceIcebergDataType set");
+      }
+
+      if (response.getIcebergSerializationPolicy() == null) {
+        throw new SFException(
+            ErrorCode.INTERNAL_ERROR,
+            "Iceberg Table's open channel response does not have serialization policy set.");
+      }
+    }
+
+    logger.logInfo(
+        "Open channel request succeeded, channel={}, table={}, clientSequencer={},"
+            + " rowSequencer={}, client={}",
+        request.getChannelName(),
+        request.getFullyQualifiedTableName(),
+        response.getClientSequencer(),
+        response.getRowSequencer(),
+        getName());
+
+    // Channel is now registered, add it to the in-memory channel pool
+    SnowflakeStreamingIngestChannelInternal<T> channel =
+        SnowflakeStreamingIngestChannelFactory.<T>builder(response.getChannelName())
+            .setDBName(response.getDBName())
+            .setSchemaName(response.getSchemaName())
+            .setTableName(response.getTableName())
+            .setOffsetToken(response.getOffsetToken())
+            .setRowSequencer(response.getRowSequencer())
+            .setChannelSequencer(response.getClientSequencer())
+            .setOwningClient(this)
+            .setEncryptionKey(response.getEncryptionKey())
+            .setEncryptionKeyId(response.getEncryptionKeyId())
+            .setOnErrorOption(request.getOnErrorOption())
+            .setDefaultTimezone(request.getDefaultTimezone())
+            .setOffsetTokenVerificationFunction(request.getOffsetTokenVerificationFunction())
+            .setParquetWriterVersion(
+                parameterProvider.isEnableIcebergStreaming()
+                    ? Constants.IcebergSerializationPolicy.valueOf(
+                            response.getIcebergSerializationPolicy())
+                        .toParquetWriterVersion()
+                    : ParquetProperties.WriterVersion.PARQUET_1_0)
+            .build();
+
+    // Setup the row buffer schema
+    channel.setupSchema(response.getTableColumns());
+
+    // Add channel to the channel cache
+    this.channelCache.addChannel(channel);
+
+    this.storageManager.registerTable(
+        new TableRef(response.getDBName(), response.getSchemaName(), response.getTableName()));
+
+    return channel;
   }
 
   @Override
@@ -414,6 +435,7 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
               request.getSchemaName(),
               request.getTableName(),
               request.getChannelName(),
+              this.parameterProvider.isEnableIcebergStreaming(),
               request instanceof DropChannelVersionRequest
                   ? ((DropChannelVersionRequest) request).getClientSequencer()
                   : null);
@@ -572,7 +594,8 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
           new RegisterBlobRequest(
               this.storageManager.getClientPrefix() + "_" + counter.getAndIncrement(),
               this.role,
-              blobs);
+              blobs,
+              this.parameterProvider.isEnableIcebergStreaming());
       response = snowflakeServiceClient.registerBlob(request, executionCount);
     } catch (IOException | IngestResponseException e) {
       throw new SFException(e, ErrorCode.REGISTER_BLOB_FAILURE, e.getMessage());
@@ -583,6 +606,18 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
         blobs.stream().map(BlobMetadata::getPath).collect(Collectors.toList()),
         this.name,
         executionCount);
+
+    // Update encryption keys for the table given the response
+    if (response.getEncryptionKeys() == null) {
+      this.encryptionKeysPerTable.clear();
+    } else {
+      for (EncryptionKey key : response.getEncryptionKeys()) {
+        this.encryptionKeysPerTable.put(
+            new FullyQualifiedTableName(
+                key.getDatabaseName(), key.getSchemaName(), key.getTableName()),
+            key);
+      }
+    }
 
     // We will retry any blob chunks that were rejected because internal Snowflake queues are full
     Set<ChunkRegisterStatus> queueFullChunks = new HashSet<>();
@@ -1048,5 +1083,14 @@ public class SnowflakeStreamingIngestClientInternal<T> implements SnowflakeStrea
     if (!this.isTestMode) {
       HttpUtil.shutdownHttpConnectionManagerDaemonThread();
     }
+  }
+
+  public Map<FullyQualifiedTableName, EncryptionKey> getEncryptionKeysPerTable() {
+    return encryptionKeysPerTable;
+  }
+
+  // TESTING ONLY - inject the storage manager
+  public void setStorageManager(IStorageManager storageManager) {
+    this.storageManager = storageManager;
   }
 }

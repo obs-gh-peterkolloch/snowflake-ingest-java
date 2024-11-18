@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Snowflake Computing Inc. All rights reserved.
  */
 
 package net.snowflake.ingest.streaming.internal;
@@ -25,6 +25,7 @@ import net.snowflake.ingest.utils.ErrorCode;
 import net.snowflake.ingest.utils.Logging;
 import net.snowflake.ingest.utils.Pair;
 import net.snowflake.ingest.utils.SFException;
+import org.apache.parquet.column.ParquetProperties;
 
 /**
  * The abstract implementation of the buffer in the Streaming Ingest channel that holds the
@@ -161,7 +162,12 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
           Set<String> inputColumnNames = verifyInputColumns(row, error, rowIndex);
           rowsSizeInBytes +=
               addRow(
-                  row, rowBuffer.bufferedRowCount, rowBuffer.statsMap, inputColumnNames, rowIndex);
+                  row,
+                  rowBuffer.bufferedRowCount,
+                  rowBuffer.statsMap,
+                  inputColumnNames,
+                  rowIndex,
+                  error);
           rowBuffer.bufferedRowCount++;
         } catch (SFException e) {
           error.setException(e);
@@ -199,7 +205,13 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
       for (Map<String, Object> row : rows) {
         Set<String> inputColumnNames = verifyInputColumns(row, null, tempRowCount);
         tempRowsSizeInBytes +=
-            addTempRow(row, tempRowCount, rowBuffer.tempStatsMap, inputColumnNames, tempRowCount);
+            addTempRow(
+                row,
+                tempRowCount,
+                rowBuffer.tempStatsMap,
+                inputColumnNames,
+                tempRowCount,
+                new InsertValidationResponse.InsertError(row, 0) /* dummy error */);
         tempRowCount++;
         if ((long) rowBuffer.bufferedRowCount + tempRowCount >= Integer.MAX_VALUE) {
           throw new SFException(ErrorCode.INTERNAL_ERROR, "Row count reaches MAX value");
@@ -248,7 +260,8 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
         try {
           Set<String> inputColumnNames = verifyInputColumns(row, error, rowIndex);
           tempRowsSizeInBytes +=
-              addTempRow(row, tempRowCount, rowBuffer.tempStatsMap, inputColumnNames, rowIndex);
+              addTempRow(
+                  row, tempRowCount, rowBuffer.tempStatsMap, inputColumnNames, rowIndex, error);
           tempRowCount++;
         } catch (SFException e) {
           error.setException(e);
@@ -290,6 +303,9 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
 
   // Temp stats map to use until all the rows are validated
   @VisibleForTesting Map<String, RowBufferStats> tempStatsMap;
+
+  // Map of the column name to the column object, used for null/missing column check
+  protected final Map<String, ParquetColumn> fieldIndex;
 
   // Lock used to protect the buffers from concurrent read/write
   private final Lock flushLock;
@@ -351,6 +367,8 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
     // Initialize empty stats
     this.statsMap = new HashMap<>();
     this.tempStatsMap = new HashMap<>();
+
+    this.fieldIndex = new HashMap<>();
   }
 
   /**
@@ -426,7 +444,7 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
     List<String> missingCols = new ArrayList<>();
     for (String columnName : this.nonNullableFieldNames) {
       if (!inputColNamesMap.containsKey(columnName)) {
-        missingCols.add(statsMap.get(columnName).getColumnDisplayName());
+        missingCols.add(fieldIndex.get(columnName).columnMetadata.getName());
       }
     }
 
@@ -446,7 +464,7 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
     for (String columnName : this.nonNullableFieldNames) {
       if (inputColNamesMap.containsKey(columnName)
           && row.get(inputColNamesMap.get(columnName)) == null) {
-        nullValueNotNullCols.add(statsMap.get(columnName).getColumnDisplayName());
+        nullValueNotNullCols.add(fieldIndex.get(columnName).columnMetadata.getName());
       }
     }
 
@@ -569,6 +587,8 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
    * @param formattedInputColumnNames list of input column names after formatting
    * @param insertRowIndex Index of the rows given in insertRows API. Not the same as
    *     bufferedRowIndex
+   * @param error Insert error object, used to populate error details when doing structured data
+   *     type parsing
    * @return row size
    */
   abstract float addRow(
@@ -576,7 +596,8 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
       int bufferedRowIndex,
       Map<String, RowBufferStats> statsMap,
       Set<String> formattedInputColumnNames,
-      final long insertRowIndex);
+      final long insertRowIndex,
+      InsertValidationResponse.InsertError error);
 
   /**
    * Add an input row to the temporary row buffer.
@@ -589,6 +610,8 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
    * @param statsMap column stats map
    * @param formattedInputColumnNames list of input column names after formatting
    * @param insertRowIndex index of the row being inserteed from User Input List
+   * @param error Insert error object, used to populate error details when doing structured data
+   *     type parsing
    * @return row size
    */
   abstract float addTempRow(
@@ -596,7 +619,8 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
       int curRowIndex,
       Map<String, RowBufferStats> statsMap,
       Set<String> formattedInputColumnNames,
-      long insertRowIndex);
+      long insertRowIndex,
+      InsertValidationResponse.InsertError error);
 
   /** Move rows from the temporary buffer to the current row buffer. */
   abstract void moveTempRowsToActualBuffer(int tempRowCount);
@@ -641,13 +665,20 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
    *
    * @param rowCount: count of rows in the given buffer
    * @param colStats: map of column name to RowBufferStats
+   * @param setAllDefaultValues: whether to set default values for all null min/max field in the EPs
+   * @param enableDistinctValuesCount: whether to include valid NDV in the EPs irrespective of the
+   *     data type of this column
    * @return the EPs built from column stats
    */
-  static EpInfo buildEpInfoFromStats(long rowCount, Map<String, RowBufferStats> colStats) {
-    EpInfo epInfo = new EpInfo(rowCount, new HashMap<>());
+  static EpInfo buildEpInfoFromStats(
+      long rowCount,
+      Map<String, RowBufferStats> colStats,
+      boolean setAllDefaultValues,
+      boolean enableDistinctValuesCount) {
+    EpInfo epInfo = new EpInfo(rowCount, new HashMap<>(), enableDistinctValuesCount);
     for (Map.Entry<String, RowBufferStats> colStat : colStats.entrySet()) {
       RowBufferStats stat = colStat.getValue();
-      FileColumnProperties dto = new FileColumnProperties(stat);
+      FileColumnProperties dto = new FileColumnProperties(stat, setAllDefaultValues);
       String colName = colStat.getValue().getColumnDisplayName();
       epInfo.getColumnEps().put(colName, dto);
     }
@@ -665,6 +696,7 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
       ChannelRuntimeState channelRuntimeState,
       ClientBufferParameters clientBufferParameters,
       OffsetTokenVerificationFunction offsetTokenVerificationFunction,
+      ParquetProperties.WriterVersion parquetWriterVersion,
       TelemetryService telemetryService) {
     switch (bdecVersion) {
       case THREE:
@@ -678,6 +710,7 @@ abstract class AbstractRowBuffer<T> implements RowBuffer<T> {
                 channelRuntimeState,
                 clientBufferParameters,
                 offsetTokenVerificationFunction,
+                parquetWriterVersion,
                 telemetryService);
       default:
         throw new SFException(

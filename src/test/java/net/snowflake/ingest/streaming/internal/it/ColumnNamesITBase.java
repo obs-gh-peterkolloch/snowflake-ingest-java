@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2024 Snowflake Computing Inc. All rights reserved.
+ */
+
 package net.snowflake.ingest.streaming.internal.it;
 
 import java.sql.ResultSet;
@@ -17,7 +21,7 @@ import net.snowflake.ingest.utils.SFException;
 import org.junit.Assert;
 import org.junit.Test;
 
-public class ColumnNamesIT extends AbstractDataTypeTest {
+public abstract class ColumnNamesITBase extends AbstractDataTypeTest {
   private static final int INGEST_VALUE = 1;
 
   @Test
@@ -83,13 +87,9 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
   /** Tests that quoted columns are correctly resolved for null-backfill */
   @Test
   public void testNullableResolution() throws Exception {
-    String tableName = "t1";
-    conn.createStatement()
-        .execute(
-            String.format(
-                "create or replace table %s (AbC int, \"AbC\" int, \"abC\" int, ab\\ c int, \"Ab"
-                    + " c\" int);",
-                tableName));
+    String tableName =
+        createTableWithColumns(
+            "AbC int", "\"AbC\" int", "\"abC\" int", "ab\\ c int", "\"Ab c\" int");
     SnowflakeStreamingIngestChannel channel = openChannel(tableName);
     String offsetToken = "token1";
     channel.insertRow(new HashMap<>(), offsetToken);
@@ -111,9 +111,7 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
    */
   @Test
   public void testExtraColNames() throws Exception {
-    String tableName = "t1";
-    conn.createStatement()
-        .execute(String.format("create or replace table %s (\"create\" int);", tableName));
+    String tableName = createTableWithColumns("\"create\" int");
     SnowflakeStreamingIngestChannel channel =
         openChannel(tableName, OpenChannelRequest.OnErrorOption.CONTINUE);
 
@@ -142,13 +140,9 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
   /** Test that display names are shown in missing not null columns validation response */
   @Test
   public void testMissingNotNullColNames() throws Exception {
-    String tableName = "t1";
-    conn.createStatement()
-        .execute(
-            String.format(
-                "create or replace table %s (\"CrEaTe\" int not null, a int not null, \"a\" int not"
-                    + " null, \"create\" int);",
-                tableName));
+    String tableName =
+        createTableWithColumns(
+            "\"CrEaTe\" int not null", "a int not null", "\"a\" int not null", "\"create\" int");
     SnowflakeStreamingIngestChannel channel =
         openChannel(tableName, OpenChannelRequest.OnErrorOption.CONTINUE);
 
@@ -164,13 +158,13 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
   /** Test that display names are shown in null values for not null columns validation response */
   @Test
   public void testNullValuesForNotNullColNames() throws Exception {
-    String tableName = "t1";
-    conn.createStatement()
-        .execute(
-            String.format(
-                "create or replace table %s (col1 int not null,  a int not null, \"a\" int not"
-                    + " null, col2 int not null, \"col3\" int);",
-                tableName));
+    String tableName =
+        createTableWithColumns(
+            "col1 int not null",
+            "a int not null",
+            "\"a\" int not null",
+            "col2 int not null",
+            "\"col3\" int");
     SnowflakeStreamingIngestChannel channel =
         openChannel(tableName, OpenChannelRequest.OnErrorOption.CONTINUE);
 
@@ -197,7 +191,7 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
   private void testColumnNameSupported(String createTableColumnName, String ingestColumnName)
       throws SQLException, InterruptedException {
 
-    String tableName = createSimpleTable(createTableColumnName);
+    String tableName = createTableWithColumns(createTableColumnName + " int");
     String offsetToken = UUID.randomUUID().toString();
     SnowflakeStreamingIngestChannel channel = openChannel(tableName);
     Map<String, Object> row = new HashMap<>();
@@ -216,7 +210,9 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
     }
     Assert.assertEquals(1, count);
 
-    conn.createStatement().execute(String.format("alter table %s migrate;", tableName));
+    if (!enableIcebergStreaming) {
+      conn.createStatement().execute(String.format("alter table %s migrate;", tableName));
+    }
   }
 
   private void testColumnNameSupported(String column) throws SQLException, InterruptedException {
@@ -229,7 +225,8 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
 
     Map<String, Object> row = new HashMap<>();
     row.put(ingestColumnName, INGEST_VALUE);
-    SnowflakeStreamingIngestChannel channel = openChannel(createSimpleTable(createTableColumnName));
+    SnowflakeStreamingIngestChannel channel =
+        openChannel(createTableWithColumns(createTableColumnName + " int"));
     testInsertRowFails(channel, row);
   }
 
@@ -243,10 +240,15 @@ public class ColumnNamesIT extends AbstractDataTypeTest {
     }
   }
 
-  private String createSimpleTable(String createTableColumnName) throws SQLException {
+  private String createTableWithColumns(String... columns) throws SQLException {
     String tableName = "a" + UUID.randomUUID().toString().replace("-", "_");
     String createTableSql =
-        String.format("create table %s (%s int);", tableName, createTableColumnName);
+        String.format(
+            "create %s table %s (%s) %s",
+            enableIcebergStreaming ? "iceberg" : "",
+            tableName,
+            String.join(",", columns),
+            enableIcebergStreaming ? getIcebergTableConfig(tableName) : "");
     conn.createStatement().execute(createTableSql);
     return tableName;
   }

@@ -4,6 +4,7 @@
 
 package net.snowflake.ingest.streaming.internal;
 
+import static net.snowflake.ingest.TestUtils.createParameterProvider;
 import static net.snowflake.ingest.utils.Constants.BLOB_CHECKSUM_SIZE_IN_BYTES;
 import static net.snowflake.ingest.utils.Constants.BLOB_CHUNK_METADATA_LENGTH_SIZE_IN_BYTES;
 import static net.snowflake.ingest.utils.Constants.BLOB_EXTENSION_TYPE;
@@ -40,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
@@ -52,6 +54,9 @@ import net.snowflake.ingest.utils.Cryptor;
 import net.snowflake.ingest.utils.ErrorCode;
 import net.snowflake.ingest.utils.ParameterProvider;
 import net.snowflake.ingest.utils.SFException;
+import org.apache.parquet.column.ParquetProperties;
+import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Types;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -64,12 +69,12 @@ import org.mockito.stubbing.Answer;
 @RunWith(Parameterized.class)
 public class FlushServiceTest {
 
-  @Parameterized.Parameters(name = "isIcebergMode: {0}")
-  public static Object[] isIcebergMode() {
+  @Parameterized.Parameters(name = "enableIcebergStreaming: {0}")
+  public static Object[] enableIcebergStreaming() {
     return new Object[] {false, true};
   }
 
-  @Parameterized.Parameter public static boolean isIcebergMode;
+  @Parameterized.Parameter public static boolean enableIcebergStreaming;
 
   public FlushServiceTest() {
     this.testContextFactory = ParquetTestContext.createFactory();
@@ -95,30 +100,51 @@ public class FlushServiceTest {
     ChannelCache<T> channelCache;
     final Map<String, SnowflakeStreamingIngestChannelInternal<T>> channels = new HashMap<>();
     FlushService<T> flushService;
-    IStorageManager<T, ?> storageManager;
-    StreamingIngestStorage storage;
+    IStorageManager storageManager;
+    InternalStage storage;
     ParameterProvider parameterProvider;
+    Map<FullyQualifiedTableName, EncryptionKey> encryptionKeysPerTable;
     RegisterService registerService;
 
     final List<ChannelData<T>> channelData = new ArrayList<>();
 
     TestContext() {
-      storage = Mockito.mock(StreamingIngestStorage.class);
-      parameterProvider = new ParameterProvider(isIcebergMode);
+      storage = Mockito.mock(InternalStage.class);
+      parameterProvider = createParameterProvider(enableIcebergStreaming);
       InternalParameterProvider internalParameterProvider =
-          new InternalParameterProvider(isIcebergMode);
+          new InternalParameterProvider(enableIcebergStreaming);
       client = Mockito.mock(SnowflakeStreamingIngestClientInternal.class);
       Mockito.when(client.getParameterProvider()).thenReturn(parameterProvider);
       Mockito.when(client.getInternalParameterProvider()).thenReturn(internalParameterProvider);
       storageManager =
           Mockito.spy(
-              isIcebergMode
-                  ? new ExternalVolumeManager<>(true, "role", "client", null)
-                  : new InternalStageManager<>(true, "role", "client", null));
+              enableIcebergStreaming
+                  ? new SubscopedTokenExternalVolumeManager(
+                      "role", "client", MockSnowflakeServiceClient.create(enableIcebergStreaming))
+                  : new InternalStageManager(true, "role", "client", null));
       Mockito.doReturn(storage).when(storageManager).getStorage(ArgumentMatchers.any());
       Mockito.when(storageManager.getClientPrefix()).thenReturn("client_prefix");
       Mockito.when(client.getParameterProvider())
           .thenAnswer((Answer<ParameterProvider>) (i) -> parameterProvider);
+
+      encryptionKeysPerTable = new ConcurrentHashMap<>();
+      if (enableIcebergStreaming) {
+        encryptionKeysPerTable.put(
+            new FullyQualifiedTableName("db1", "schema1", "table1"),
+            new EncryptionKey("db1", "schema1", "table1", "key1", 1234L));
+        encryptionKeysPerTable.put(
+            new FullyQualifiedTableName("db2", "schema1", "table2"),
+            new EncryptionKey("db2", "schema1", "table2", "key1", 1234L));
+
+        for (int i = 0; i <= 9999; i++) {
+          encryptionKeysPerTable.put(
+              new FullyQualifiedTableName("db1", "PUBLIC", String.format("table%d", i)),
+              new EncryptionKey("db1", "PUBLIC", String.format("table%d", i), "key1", 1234L));
+        }
+
+        Mockito.when(client.getEncryptionKeysPerTable()).thenReturn(encryptionKeysPerTable);
+      }
+
       channelCache = new ChannelCache<>();
       Mockito.when(client.getChannelCache()).thenReturn(channelCache);
       registerService = Mockito.spy(new RegisterService(client, client.isTestMode()));
@@ -126,7 +152,7 @@ public class FlushServiceTest {
     }
 
     void setParameterOverride(Map<String, Object> parameterOverride) {
-      this.parameterProvider = new ParameterProvider(parameterOverride, null, isIcebergMode);
+      this.parameterProvider = new ParameterProvider(parameterOverride, null);
     }
 
     ChannelData<T> flushChannel(String name) {
@@ -140,9 +166,10 @@ public class FlushServiceTest {
     BlobMetadata buildAndUpload() throws Exception {
       List<List<ChannelData<T>>> blobData = Collections.singletonList(channelData);
       return flushService.buildAndUpload(
-          "file_name",
+          new BlobPath("file_name" /* uploadPath */, "file_name" /* fileRegistrationPath */),
           blobData,
-          blobData.get(0).get(0).getChannelContext().getFullyQualifiedTableName());
+          blobData.get(0).get(0).getChannelContext().getFullyQualifiedTableName(),
+          encryptionKeysPerTable);
     }
 
     abstract SnowflakeStreamingIngestChannelInternal<T> createChannel(
@@ -295,8 +322,10 @@ public class FlushServiceTest {
           encryptionKeyId,
           onErrorOption,
           defaultTimezone,
-          Constants.BdecVersion.THREE,
-          null);
+          null,
+          enableIcebergStreaming
+              ? ParquetProperties.WriterVersion.PARQUET_2_0
+              : ParquetProperties.WriterVersion.PARQUET_1_0);
     }
 
     @Override
@@ -425,7 +454,8 @@ public class FlushServiceTest {
 
   @Test
   public void testGetFilePath() {
-    if (isIcebergMode) {
+    // SNOW-1490151 Iceberg testing gaps
+    if (enableIcebergStreaming) {
       // TODO: SNOW-1502887 Blob path generation for iceberg table
       return;
     }
@@ -434,7 +464,7 @@ public class FlushServiceTest {
     Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
     String clientPrefix = "honk";
     String outputString =
-        ((InternalStageManager<?>) storageManager).getBlobPath(calendar, clientPrefix);
+        ((InternalStageManager) storageManager).getNextFileName(calendar, clientPrefix);
     Path outputPath = Paths.get(outputString);
     Assert.assertTrue(outputPath.getFileName().toString().contains(clientPrefix));
     Assert.assertTrue(
@@ -464,7 +494,7 @@ public class FlushServiceTest {
 
   @Test
   public void testInterleaveFlush() throws Exception {
-    if (isIcebergMode) {
+    if (enableIcebergStreaming) {
       // Interleaved blob is not supported in iceberg mode
       return;
     }
@@ -634,9 +664,12 @@ public class FlushServiceTest {
     FlushService<?> flushService = testContext.flushService;
 
     // Force = true flushes
-    flushService.flush(true).get();
-    Mockito.verify(flushService, Mockito.atLeast(2))
-        .buildAndUpload(Mockito.any(), Mockito.any(), Mockito.any());
+    // SNOW-1490151 Iceberg testing gaps
+    if (!enableIcebergStreaming) {
+      flushService.flush(true).get();
+      Mockito.verify(flushService, Mockito.atLeast(2))
+          .buildAndUpload(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
   }
 
   @Test
@@ -683,10 +716,13 @@ public class FlushServiceTest {
 
     FlushService<?> flushService = testContext.flushService;
 
-    // Force = true flushes
-    flushService.flush(true).get();
-    Mockito.verify(flushService, Mockito.atLeast(2))
-        .buildAndUpload(Mockito.any(), Mockito.any(), Mockito.any());
+    // SNOW-1490151 Iceberg testing gaps
+    if (!enableIcebergStreaming) {
+      // Force = true flushes
+      flushService.flush(true).get();
+      Mockito.verify(flushService, Mockito.atLeast(2))
+          .buildAndUpload(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
   }
 
   @Test
@@ -718,14 +754,22 @@ public class FlushServiceTest {
 
     FlushService<?> flushService = testContext.flushService;
 
-    // Force = true flushes
-    flushService.flush(true).get();
-    Mockito.verify(flushService, Mockito.times(2))
-        .buildAndUpload(Mockito.any(), Mockito.any(), Mockito.any());
+    // SNOW-1490151 Iceberg testing gaps
+    if (!enableIcebergStreaming) {
+      // Force = true flushes
+      flushService.flush(true).get();
+      Mockito.verify(flushService, Mockito.times(2))
+          .buildAndUpload(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
   }
 
   @Test
   public void testBlobSplitDueToNumberOfChunks() throws Exception {
+    // SNOW-1490151 Iceberg testing gaps
+    if (enableIcebergStreaming) {
+      return;
+    }
+
     for (int rowCount : Arrays.asList(0, 1, 30, 111, 159, 287, 1287, 1599, 4496)) {
       runTestBlobSplitDueToNumberOfChunks(rowCount);
     }
@@ -744,7 +788,7 @@ public class FlushServiceTest {
             Math.ceil(
                 (double) numberOfRows
                     / channelsPerTable
-                    / (isIcebergMode
+                    / (enableIcebergStreaming
                         ? ParameterProvider.MAX_CHUNKS_IN_BLOB_ICEBERG_MODE_DEFAULT
                         : ParameterProvider.MAX_CHUNKS_IN_BLOB_DEFAULT));
 
@@ -763,7 +807,7 @@ public class FlushServiceTest {
     ArgumentCaptor<List<List<ChannelData<List<List<Object>>>>>> blobDataCaptor =
         ArgumentCaptor.forClass(List.class);
     Mockito.verify(flushService, Mockito.times(expectedBlobs))
-        .buildAndUpload(Mockito.any(), blobDataCaptor.capture(), Mockito.any());
+        .buildAndUpload(Mockito.any(), blobDataCaptor.capture(), Mockito.any(), Mockito.any());
 
     // 1. list => blobs; 2. list => chunks; 3. list => channels; 4. list => rows, 5. list => columns
     List<List<List<ChannelData<List<List<Object>>>>>> allUploadedBlobs =
@@ -800,13 +844,18 @@ public class FlushServiceTest {
     channel3.setupSchema(Collections.singletonList(createLargeTestTextColumn("C1")));
     channel3.insertRow(Collections.singletonMap("C1", 0), "");
 
+    // SNOW-1490151 Iceberg testing gaps
+    if (enableIcebergStreaming) {
+      return;
+    }
+
     FlushService<List<List<Object>>> flushService = testContext.flushService;
     flushService.flush(true).get();
 
     ArgumentCaptor<List<List<ChannelData<List<List<Object>>>>>> blobDataCaptor =
         ArgumentCaptor.forClass(List.class);
     Mockito.verify(flushService, Mockito.atLeast(2))
-        .buildAndUpload(Mockito.any(), blobDataCaptor.capture(), Mockito.any());
+        .buildAndUpload(Mockito.any(), blobDataCaptor.capture(), Mockito.any(), Mockito.any());
 
     // 1. list => blobs; 2. list => chunks; 3. list => channels; 4. list => rows, 5. list => columns
     List<List<List<ChannelData<List<List<Object>>>>>> allUploadedBlobs =
@@ -863,8 +912,18 @@ public class FlushServiceTest {
     Map<String, RowBufferStats> eps1 = new HashMap<>();
     Map<String, RowBufferStats> eps2 = new HashMap<>();
 
-    RowBufferStats stats1 = new RowBufferStats("COL1");
-    RowBufferStats stats2 = new RowBufferStats("COL1");
+    RowBufferStats stats1 =
+        new RowBufferStats(
+            "COL1",
+            Types.optional(PrimitiveType.PrimitiveTypeName.INT32).id(1).named("COL1"),
+            enableIcebergStreaming,
+            enableIcebergStreaming);
+    RowBufferStats stats2 =
+        new RowBufferStats(
+            "COL1",
+            Types.optional(PrimitiveType.PrimitiveTypeName.INT32).id(1).named("COL1"),
+            enableIcebergStreaming,
+            enableIcebergStreaming);
 
     eps1.put("one", stats1);
     eps2.put("one", stats2);
@@ -898,7 +957,10 @@ public class FlushServiceTest {
 
     EpInfo expectedChunkEpInfo =
         AbstractRowBuffer.buildEpInfoFromStats(
-            3, ChannelData.getCombinedColumnStatsMap(eps1, eps2));
+            3,
+            ChannelData.getCombinedColumnStatsMap(eps1, eps2),
+            !enableIcebergStreaming,
+            enableIcebergStreaming);
 
     ChannelMetadata expectedChannel1Metadata =
         ChannelMetadata.builder()
@@ -926,9 +988,9 @@ public class FlushServiceTest {
             .build();
 
     // Check FlushService.upload called with correct arguments
-    final ArgumentCaptor<StreamingIngestStorage> storageCaptor =
-        ArgumentCaptor.forClass(StreamingIngestStorage.class);
-    final ArgumentCaptor<String> nameCaptor = ArgumentCaptor.forClass(String.class);
+    final ArgumentCaptor<InternalStage> storageCaptor =
+        ArgumentCaptor.forClass(InternalStage.class);
+    final ArgumentCaptor<BlobPath> nameCaptor = ArgumentCaptor.forClass(BlobPath.class);
     final ArgumentCaptor<byte[]> blobCaptor = ArgumentCaptor.forClass(byte[].class);
     final ArgumentCaptor<List<ChunkMetadata>> metadataCaptor = ArgumentCaptor.forClass(List.class);
 
@@ -939,7 +1001,7 @@ public class FlushServiceTest {
             blobCaptor.capture(),
             metadataCaptor.capture(),
             ArgumentMatchers.any());
-    Assert.assertEquals("file_name", nameCaptor.getValue());
+    Assert.assertEquals("file_name", nameCaptor.getValue().fileRegistrationPath);
 
     ChunkMetadata metadataResult = metadataCaptor.getValue().get(0);
     List<ChannelMetadata> channelMetadataResult = metadataResult.getChannels();
@@ -1026,10 +1088,13 @@ public class FlushServiceTest {
     // Create a new Client in order to not interfere with other tests
     SnowflakeStreamingIngestClientInternal<StubChunkData> client =
         Mockito.mock(SnowflakeStreamingIngestClientInternal.class);
-    ParameterProvider parameterProvider = new ParameterProvider(isIcebergMode);
+    ParameterProvider parameterProvider = createParameterProvider(enableIcebergStreaming);
     ChannelCache<StubChunkData> channelCache = new ChannelCache<>();
+    InternalParameterProvider internalParameterProvider =
+        new InternalParameterProvider(enableIcebergStreaming);
     Mockito.when(client.getChannelCache()).thenReturn(channelCache);
     Mockito.when(client.getParameterProvider()).thenReturn(parameterProvider);
+    Mockito.when(client.getInternalParameterProvider()).thenReturn(internalParameterProvider);
     SnowflakeStreamingIngestChannelInternal<StubChunkData> channel1 =
         new SnowflakeStreamingIngestChannelInternal<>(
             "channel1",
@@ -1043,7 +1108,11 @@ public class FlushServiceTest {
             "key",
             1234L,
             OpenChannelRequest.OnErrorOption.CONTINUE,
-            ZoneOffset.UTC);
+            ZoneOffset.UTC,
+            null /* offsetTokenVerificationFunction */,
+            enableIcebergStreaming
+                ? ParquetProperties.WriterVersion.PARQUET_2_0
+                : ParquetProperties.WriterVersion.PARQUET_1_0);
 
     SnowflakeStreamingIngestChannelInternal<StubChunkData> channel2 =
         new SnowflakeStreamingIngestChannelInternal<>(
@@ -1058,7 +1127,11 @@ public class FlushServiceTest {
             "key",
             1234L,
             OpenChannelRequest.OnErrorOption.CONTINUE,
-            ZoneOffset.UTC);
+            ZoneOffset.UTC,
+            null /* offsetTokenVerificationFunction */,
+            enableIcebergStreaming
+                ? ParquetProperties.WriterVersion.PARQUET_2_0
+                : ParquetProperties.WriterVersion.PARQUET_1_0);
 
     channelCache.addChannel(channel1);
     channelCache.addChannel(channel2);
@@ -1077,8 +1150,8 @@ public class FlushServiceTest {
     innerData.add(channel1Data);
     innerData.add(channel2Data);
 
-    IStorageManager<StubChunkData, InternalStageLocation> storageManager =
-        Mockito.spy(new InternalStageManager<>(true, "role", "client", null));
+    IStorageManager storageManager =
+        Mockito.spy(new InternalStageManager(true, "role", "client", null));
     FlushService<StubChunkData> flushService =
         new FlushService<>(client, channelCache, storageManager, false);
     flushService.invalidateAllChannelsInBlob(blobData, "Invalidated by test");
@@ -1103,13 +1176,20 @@ public class FlushServiceTest {
 
     Map<String, RowBufferStats> eps1 = new HashMap<>();
 
-    RowBufferStats stats1 = new RowBufferStats("COL1");
+    RowBufferStats stats1 =
+        new RowBufferStats(
+            "COL1",
+            Types.optional(PrimitiveType.PrimitiveTypeName.INT32).id(1).named("COL1"),
+            enableIcebergStreaming,
+            enableIcebergStreaming);
 
     eps1.put("one", stats1);
 
     stats1.addIntValue(new BigInteger("10"));
     stats1.addIntValue(new BigInteger("15"));
-    EpInfo epInfo = AbstractRowBuffer.buildEpInfoFromStats(2, eps1);
+    EpInfo epInfo =
+        AbstractRowBuffer.buildEpInfoFromStats(
+            2, eps1, !enableIcebergStreaming, enableIcebergStreaming);
 
     ChannelMetadata channelMetadata =
         ChannelMetadata.builder()

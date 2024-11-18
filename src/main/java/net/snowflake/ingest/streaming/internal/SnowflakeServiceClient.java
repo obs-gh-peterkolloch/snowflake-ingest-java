@@ -4,18 +4,20 @@
 
 package net.snowflake.ingest.streaming.internal;
 
-import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.STREAMING_CHANNEL_CONFIGURE;
+import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.GENERATE_PRESIGNED_URLS;
+import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.REFRESH_TABLE_INFORMATION;
 import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.STREAMING_CHANNEL_STATUS;
 import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.STREAMING_CLIENT_CONFIGURE;
 import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.STREAMING_DROP_CHANNEL;
 import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.STREAMING_OPEN_CHANNEL;
 import static net.snowflake.ingest.connection.ServiceResponseHandler.ApiName.STREAMING_REGISTER_BLOB;
 import static net.snowflake.ingest.streaming.internal.StreamingIngestUtils.executeWithRetries;
-import static net.snowflake.ingest.utils.Constants.CHANNEL_CONFIGURE_ENDPOINT;
 import static net.snowflake.ingest.utils.Constants.CHANNEL_STATUS_ENDPOINT;
 import static net.snowflake.ingest.utils.Constants.CLIENT_CONFIGURE_ENDPOINT;
 import static net.snowflake.ingest.utils.Constants.DROP_CHANNEL_ENDPOINT;
+import static net.snowflake.ingest.utils.Constants.GENERATE_PRESIGNED_URLS_ENDPOINT;
 import static net.snowflake.ingest.utils.Constants.OPEN_CHANNEL_ENDPOINT;
+import static net.snowflake.ingest.utils.Constants.REFRESH_TABLE_INFORMATION_ENDPOINT;
 import static net.snowflake.ingest.utils.Constants.REGISTER_BLOB_ENDPOINT;
 import static net.snowflake.ingest.utils.Constants.RESPONSE_SUCCESS;
 
@@ -76,28 +78,44 @@ class SnowflakeServiceClient {
     return response;
   }
 
-  /**
-   * Configures a channel's storage info given a {@link ChannelConfigureRequest}.
-   *
-   * @param request the channel configuration request
-   * @return the response from the configuration request
-   */
-  ChannelConfigureResponse channelConfigure(ChannelConfigureRequest request)
+  /** Generates a batch of presigned URLs for a table */
+  GeneratePresignedUrlsResponse generatePresignedUrls(GeneratePresignedUrlsRequest request)
       throws IngestResponseException, IOException {
-    ChannelConfigureResponse response =
+    GeneratePresignedUrlsResponse response =
         executeApiRequestWithRetries(
-            ChannelConfigureResponse.class,
+            GeneratePresignedUrlsResponse.class,
             request,
-            CHANNEL_CONFIGURE_ENDPOINT,
-            "channel configure",
-            STREAMING_CHANNEL_CONFIGURE);
+            GENERATE_PRESIGNED_URLS_ENDPOINT,
+            "generate presigned urls",
+            GENERATE_PRESIGNED_URLS);
 
     if (response.getStatusCode() != RESPONSE_SUCCESS) {
       logger.logDebug(
-          "Channel configure request failed, request={}, response={}",
+          "GeneratePresignedUrls request failed, request={}, response={}",
           request.getStringForLogging(),
           response.getMessage());
-      throw new SFException(ErrorCode.CHANNEL_CONFIGURE_FAILURE, response.getMessage());
+      throw new SFException(ErrorCode.GENERATE_PRESIGNED_URLS_FAILURE, response.getMessage());
+    }
+    return response;
+  }
+
+  /** Fetches the latest sub-scoped tokens from the server for the requested table in the request */
+  RefreshTableInformationResponse refreshTableInformation(RefreshTableInformationRequest request)
+      throws IngestResponseException, IOException {
+    RefreshTableInformationResponse response =
+        executeApiRequestWithRetries(
+            RefreshTableInformationResponse.class,
+            request,
+            REFRESH_TABLE_INFORMATION_ENDPOINT,
+            "refresh table information",
+            REFRESH_TABLE_INFORMATION);
+
+    if (response.getStatusCode() != RESPONSE_SUCCESS) {
+      logger.logDebug(
+          "RefreshTableInformation request failed, request={}, response={}",
+          request.getStringForLogging(),
+          response.getMessage());
+      throw new SFException(ErrorCode.REFRESH_TABLE_INFORMATION_FAILURE, response.getMessage());
     }
     return response;
   }

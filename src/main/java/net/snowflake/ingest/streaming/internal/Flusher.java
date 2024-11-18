@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Snowflake Computing Inc. All rights reserved.
  */
 
 package net.snowflake.ingest.streaming.internal;
@@ -20,12 +20,15 @@ public interface Flusher<T> {
   /**
    * Serialize buffered rows into the underlying format.
    *
+   * @param fullyQualifiedTableName
    * @param channelsDataPerTable buffered rows
    * @param filePath file path
+   * @param chunkStartOffset
    * @return {@link SerializationResult}
    * @throws IOException
    */
-  SerializationResult serialize(List<ChannelData<T>> channelsDataPerTable, String filePath)
+  SerializationResult serialize(
+      List<ChannelData<T>> channelsDataPerTable, String filePath, long chunkStartOffset)
       throws IOException;
 
   /** Holds result of the buffered rows conversion: channel metadata and stats. */
@@ -36,6 +39,7 @@ public interface Flusher<T> {
     final float chunkEstimatedUncompressedSize;
     final ByteArrayOutputStream chunkData;
     final Pair<Long, Long> chunkMinMaxInsertTimeInMs;
+    final long extendedMetadataSize;
 
     public SerializationResult(
         List<ChannelMetadata> channelsMetadataList,
@@ -43,13 +47,15 @@ public interface Flusher<T> {
         long rowCount,
         float chunkEstimatedUncompressedSize,
         ByteArrayOutputStream chunkData,
-        Pair<Long, Long> chunkMinMaxInsertTimeInMs) {
+        Pair<Long, Long> chunkMinMaxInsertTimeInMs,
+        long extendedMetadataSize) {
       this.channelsMetadataList = channelsMetadataList;
       this.columnEpStatsMapCombined = columnEpStatsMapCombined;
       this.rowCount = rowCount;
       this.chunkEstimatedUncompressedSize = chunkEstimatedUncompressedSize;
       this.chunkData = chunkData;
       this.chunkMinMaxInsertTimeInMs = chunkMinMaxInsertTimeInMs;
+      this.extendedMetadataSize = extendedMetadataSize;
     }
   }
 }

@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright (c) 2024 Snowflake Computing Inc. All rights reserved.
+  -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
      xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
@@ -6,7 +9,7 @@
   <!-- Arifact name and version information -->
   <groupId>net.snowflake</groupId>
   <artifactId>snowflake-ingest-sdk</artifactId>
-  <version>2.2.2</version>
+  <version>3.0.0</version>
   <packaging>jar</packaging>
   <name>Snowflake Ingest SDK</name>
   <description>Snowflake Ingest SDK</description>
@@ -35,19 +38,21 @@
 
   <!-- Set our Language Level to Java 8 -->
   <properties>
+    <avro.version>1.11.4</avro.version>
     <bouncycastle.version>1.78.1</bouncycastle.version>
     <codehaus.version>1.9.13</codehaus.version>
-    <commonscodec.version>1.15</commonscodec.version>
+    <commonscodec.version>1.17.1</commonscodec.version>
     <commonscollections.version>3.2.2</commonscollections.version>
-    <commonscompress.version>1.26.0</commonscompress.version>
+    <commonscompress.version>1.26.2</commonscompress.version>
     <commonsconfiguration2.version>2.10.1</commonsconfiguration2.version>
-    <commonsio.version>2.15.1</commonsio.version>
+    <commonsio.version>2.16.1</commonsio.version>
     <commonslang3.version>3.14.0</commonslang3.version>
     <commonslogging.version>1.3.3</commonslogging.version>
     <commonstext.version>1.11.0</commonstext.version>
     <fasterxml.version>2.17.2</fasterxml.version>
     <guava.version>32.0.1-jre</guava.version>
-    <hadoop.version>3.3.6</hadoop.version>
+    <hadoop.version>3.4.0</hadoop.version>
+    <iceberg.version>1.6.1</iceberg.version>
     <jacoco.skip.instrument>true</jacoco.skip.instrument>
     <jacoco.version>0.8.5</jacoco.version>
     <license.processing.dependencyJarsDir>${project.build.directory}/dependency-jars</license.processing.dependencyJarsDir>
@@ -57,17 +62,17 @@
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
     <net.minidev.version>2.4.9</net.minidev.version>
-    <netty.version>4.1.94.Final</netty.version>
+    <netty.version>4.1.113.Final</netty.version>
     <nimbusds.version>9.37.3</nimbusds.version>
     <objenesis.version>3.1</objenesis.version>
     <parquet.version>1.14.1</parquet.version>
     <powermock.version>2.0.9</powermock.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <protobuf.version>4.27.2</protobuf.version>
+    <protobuf.version>4.27.5</protobuf.version>
     <shadeBase>net.snowflake.ingest.internal</shadeBase>
     <slf4j.version>1.7.36</slf4j.version>
     <snappy.version>1.1.10.5</snappy.version>
-    <snowjdbc.version>3.18.0</snowjdbc.version>
+    <snowjdbc.version>3.20.0</snowjdbc.version>
     <yetus.version>0.13.0</yetus.version>
   </properties>
 
@@ -136,6 +141,11 @@
         <version>${snowjdbc.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.apache.avro</groupId>
+        <artifactId>avro</artifactId>
+        <version>${avro.version}</version>
+      </dependency>
+      <dependency>
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-compress</artifactId>
         <version>${commonscompress.version}</version>
@@ -149,11 +159,6 @@
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-lang3</artifactId>
         <version>${commonslang3.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.apache.commons</groupId>
-        <artifactId>commons-text</artifactId>
-        <version>${commonstext.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hadoop</groupId>
@@ -197,6 +202,14 @@
             <artifactId>metrics-core</artifactId>
           </exclusion>
           <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-handler</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>javax.activation</groupId>
             <artifactId>activation</artifactId>
           </exclusion>
@@ -237,6 +250,10 @@
             <artifactId>zookeeper</artifactId>
           </exclusion>
           <exclusion>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk15on</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-server</artifactId>
           </exclusion>
@@ -261,6 +278,21 @@
             <artifactId>slf4j-reload4j</artifactId>
           </exclusion>
         </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-api</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-core</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-parquet</artifactId>
+        <version>${iceberg.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.parquet</groupId>
@@ -353,6 +385,12 @@
         <scope>test</scope>
       </dependency>
       <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-text</artifactId>
+        <version>${commonstext.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-mapreduce-client-core</artifactId>
         <version>${hadoop.version}</version>
@@ -367,6 +405,14 @@
             <artifactId>jaxb-api</artifactId>
           </exclusion>
           <exclusion>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-yarn-common</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk15on</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-reload4j</artifactId>
           </exclusion>
@@ -375,6 +421,12 @@
             <artifactId>slf4j-simple</artifactId>
           </exclusion>
         </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <version>3.26.3</version>
+        <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>org.mockito</groupId>
@@ -499,12 +551,44 @@
       <artifactId>commons-configuration2</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-text</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-common</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-mapreduce-client-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-core</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>io.airlift</groupId>
+          <artifactId>aircompressor</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-parquet</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>io.airlift</groupId>
+          <artifactId>aircompressor</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.parquet</groupId>
+          <artifactId>parquet-avro</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <!-- https://mvnrepository.com/artifact/org.apache.parquet/parquet-hadoop -->
     <dependency>
@@ -568,9 +652,8 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.hamcrest</groupId>
-      <artifactId>hamcrest-core</artifactId>
-      <version>1.3</version>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -811,7 +894,18 @@
                   </ignoreClasses>
                   <findAllDuplicates>true</findAllDuplicates>
                   <ignoreWhenIdentical>true</ignoreWhenIdentical>
+                  <dependencies>
+                    <dependency>
+                      <groupId>net.snowflake</groupId>
+                      <artifactId>snowflake-jdbc</artifactId>
+                      <ignoreClasses>
+                        <!-- zstd exists in ingest JAR, as well as JDBC jar and cannot be relocated, so we need to ignore it here -->
+                        <ignoreClass>com.github.luben.zstd.*</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                  </dependencies>
                 </banDuplicateClasses>
+
                 <banDuplicatePomDependencyVersions/>
                 <bannedDependencies/>
                 <dependencyConvergence/>
@@ -901,9 +995,10 @@
                             |Apache-2.0
                             |Apache License, Version 2.0
                             |Apache 2.0
-                            |Apache License V2.0</licenseMerge>
+              |Apache License V2.0
+              |Apache 2</licenseMerge>
             <licenseMerge>BSD 2-Clause License
-                            |The BSD License</licenseMerge>
+              |The BSD License |BSD</licenseMerge>
             <licenseMerge>The MIT License|MIT License</licenseMerge>
             <licenseMerge>3-Clause BSD License|BSD-3-Clause</licenseMerge>
           </licenseMerges>
@@ -1146,6 +1241,10 @@
                   <pattern>io.airlift.compress</pattern>
                   <shadedPattern>${shadeBase}.io.airlift.compress</shadedPattern>
                 </relocation>
+                <relocation>
+                  <pattern>org.roaringbitmap</pattern>
+                  <shadedPattern>${shadeBase}.org.roaringbitmap</shadedPattern>
+                </relocation>
               </relocations>
               <filters>
                 <filter>
@@ -1154,17 +1253,25 @@
                     <exclude>assets/org/apache/commons/math3/exception/util/LocalizedFormats_fr.properties</exclude>
                     <exclude>about.html</exclude>
                     <exclude>mozilla/public-suffix-list.txt</exclude>
-
+                    <exclude>META-INF/ASL2.0</exclude>
+                    <exclude>META-INF/FastDoubleParser-LICENSE</exclude>
+                    <exclude>META-INF/FastDoubleParser-NOTICE</exclude>
+                    <exclude>META-INF/licenses*/**</exclude>
                     <exclude>META-INF/LICENSE*</exclude>
                     <exclude>META-INF/NOTICE*</exclude>
                     <exclude>META-INF/DEPENDENCIES</exclude>
                     <exclude>META-INF/maven/**</exclude>
                     <exclude>META-INF/services/com.fasterxml.*</exclude>
+                    <exclude>META-INF/thirdparty-LICENSE</exclude>
                     <exclude>META-INF/*.xml</exclude>
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.DSA</exclude>
                     <exclude>META-INF/*.RSA</exclude>
+                    <exclude>LICENSE</exclude>
+                    <exclude>NOTICE</exclude>
+                    <exclude>iceberg-build.properties</exclude>
                     <exclude>google/protobuf/**/*.proto</exclude>
+                    <exclude>THIRD-PARTY.txt</exclude>
                   </excludes>
                 </filter>
                 <filter>
@@ -1305,6 +1412,10 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <groups>${failsafe.groups}</groups>
+              <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
+            </configuration>
             <executions>
               <execution>
                 <goals>

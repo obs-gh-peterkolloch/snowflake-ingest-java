@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2022-2024 Snowflake Computing Inc. All rights reserved.
  */
 
 package org.apache.parquet.hadoop;
@@ -9,58 +9,78 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import net.snowflake.ingest.utils.Constants;
 import net.snowflake.ingest.utils.ErrorCode;
 import net.snowflake.ingest.utils.SFException;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.ParquetProperties;
-import org.apache.parquet.column.values.factory.DefaultV1ValuesWriterFactory;
+import org.apache.parquet.column.values.factory.DefaultValuesWriterFactory;
 import org.apache.parquet.crypto.FileEncryptionProperties;
 import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.hadoop.metadata.BlockMetaData;
+import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.io.DelegatingPositionOutputStream;
 import org.apache.parquet.io.OutputFile;
 import org.apache.parquet.io.ParquetEncodingException;
 import org.apache.parquet.io.PositionOutputStream;
 import org.apache.parquet.io.api.Binary;
 import org.apache.parquet.io.api.RecordConsumer;
+import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Type;
 
 /**
- * BDEC specific parquet writer.
+ * Snowflake specific parquet writer, supports BDEC file for FDN tables and parquet file for Iceberg
+ * tables.
  *
  * <p>Resides in parquet package because, it uses {@link InternalParquetRecordWriter} and {@link
  * CodecFactory} that are package private.
  */
-public class BdecParquetWriter implements AutoCloseable {
+public class SnowflakeParquetWriter implements AutoCloseable {
   private final InternalParquetRecordWriter<List<Object>> writer;
   private final CodecFactory codecFactory;
+
+  // Optional cap on the max number of row groups to allow per file, if this is exceeded we'll end
+  // up throwing
+  private final Optional<Integer> maxRowGroups;
+
+  private final ParquetProperties.WriterVersion writerVersion;
+  private final boolean enableDictionaryEncoding;
+
   private long rowsWritten = 0;
 
   /**
-   * Creates a BDEC specific parquet writer.
+   * Creates a Snowflake specific parquet writer.
    *
    * @param stream output
    * @param schema row schema
    * @param extraMetaData extra metadata
    * @param channelName name of the channel that is using the writer
+   * @param maxRowGroups Optional cap on the max number of row groups to allow per file, if this is
+   *     exceeded we'll end up throwing
    * @throws IOException
    */
-  public BdecParquetWriter(
+  public SnowflakeParquetWriter(
       ByteArrayOutputStream stream,
       MessageType schema,
       Map<String, String> extraMetaData,
       String channelName,
       long maxChunkSizeInBytes,
-      Constants.BdecParquetCompression bdecParquetCompression)
+      Optional<Integer> maxRowGroups,
+      Constants.BdecParquetCompression bdecParquetCompression,
+      ParquetProperties.WriterVersion writerVersion,
+      boolean enableDictionaryEncoding)
       throws IOException {
     OutputFile file = new ByteArrayOutputFile(stream, maxChunkSizeInBytes);
+    this.maxRowGroups = maxRowGroups;
+    this.writerVersion = writerVersion;
+    this.enableDictionaryEncoding = enableDictionaryEncoding;
     ParquetProperties encodingProps = createParquetProperties();
     Configuration conf = new Configuration();
     WriteSupport<List<Object>> writeSupport =
-        new BdecWriteSupport(schema, extraMetaData, channelName);
+        new SnowflakeWriteSupport(schema, extraMetaData, channelName);
     WriteSupport.WriteContext writeContext = writeSupport.init(conf);
 
     ParquetFileWriter fileWriter =
@@ -105,11 +125,37 @@ public class BdecParquetWriter implements AutoCloseable {
 
   /** @return List of row counts per block stored in the parquet footer */
   public List<Long> getRowCountsFromFooter() {
+    if (maxRowGroups.isPresent() && writer.getFooter().getBlocks().size() > maxRowGroups.get()) {
+      throw new SFException(
+          ErrorCode.INTERNAL_ERROR,
+          String.format(
+              "Expecting only %d row group in the parquet file, but found %d",
+              maxRowGroups.get(), writer.getFooter().getBlocks().size()));
+    }
+
     final List<Long> blockRowCounts = new ArrayList<>();
     for (BlockMetaData metadata : writer.getFooter().getBlocks()) {
       blockRowCounts.add(metadata.getRowCount());
     }
     return blockRowCounts;
+  }
+
+  /** @return extended metadata size (page index size + bloom filter size) */
+  public long getExtendedMetadataSize() {
+    long extendedMetadataSize = 0;
+    for (BlockMetaData metadata : writer.getFooter().getBlocks()) {
+      for (ColumnChunkMetaData column : metadata.getColumns()) {
+        extendedMetadataSize +=
+            (column.getColumnIndexReference() != null
+                    ? column.getColumnIndexReference().getLength()
+                    : 0)
+                + (column.getOffsetIndexReference() != null
+                    ? column.getOffsetIndexReference().getLength()
+                    : 0)
+                + (column.getBloomFilterLength() == -1 ? 0 : column.getBloomFilterLength());
+      }
+    }
+    return extendedMetadataSize;
   }
 
   public void writeRow(List<Object> row) {
@@ -136,7 +182,7 @@ public class BdecParquetWriter implements AutoCloseable {
     }
   }
 
-  private static ParquetProperties createParquetProperties() {
+  private ParquetProperties createParquetProperties() {
     /**
      * There are two main limitations on the server side that we have to overcome by tweaking
      * Parquet limits:
@@ -164,11 +210,11 @@ public class BdecParquetWriter implements AutoCloseable {
     return ParquetProperties.builder()
         // PARQUET_2_0 uses Encoding.DELTA_BYTE_ARRAY for byte arrays (e.g. SF sb16)
         // server side does not support it TODO: SNOW-657238
-        .withWriterVersion(ParquetProperties.WriterVersion.PARQUET_1_0)
-        .withValuesWriterFactory(new DefaultV1ValuesWriterFactory())
+        .withWriterVersion(writerVersion)
+        .withValuesWriterFactory(new DefaultValuesWriterFactory())
         // the dictionary encoding (Encoding.*_DICTIONARY) is not supported by server side
         // scanner yet
-        .withDictionaryEncoding(false)
+        .withDictionaryEncoding(enableDictionaryEncoding)
         .withPageRowCountLimit(Integer.MAX_VALUE)
         .withMinRowCountForPageSizeCheck(Integer.MAX_VALUE)
         .build();
@@ -237,16 +283,17 @@ public class BdecParquetWriter implements AutoCloseable {
    *
    * <p>This class is implemented as parquet library API requires, mostly to serialize user column
    * values depending on type into Parquet {@link RecordConsumer} in {@link
-   * BdecWriteSupport#write(List)}.
+   * SnowflakeWriteSupport#write(List)}.
    */
-  private static class BdecWriteSupport extends WriteSupport<List<Object>> {
+  private static class SnowflakeWriteSupport extends WriteSupport<List<Object>> {
     MessageType schema;
     RecordConsumer recordConsumer;
     Map<String, String> extraMetadata;
     private final String channelName;
 
     // TODO SNOW-672156: support specifying encodings and compression
-    BdecWriteSupport(MessageType schema, Map<String, String> extraMetadata, String channelName) {
+    SnowflakeWriteSupport(
+        MessageType schema, Map<String, String> extraMetadata, String channelName) {
       this.schema = schema;
       this.extraMetadata = extraMetadata;
       this.channelName = channelName;
@@ -264,7 +311,8 @@ public class BdecParquetWriter implements AutoCloseable {
 
     @Override
     public void write(List<Object> values) {
-      List<ColumnDescriptor> cols = schema.getColumns();
+      List<Type> cols =
+          schema.getFields(); /* getFields() returns top level columns in the schema */
       if (values.size() != cols.size()) {
         throw new ParquetEncodingException(
             "Invalid input data in channel '"
@@ -278,51 +326,83 @@ public class BdecParquetWriter implements AutoCloseable {
                 + ") : "
                 + values);
       }
-
       recordConsumer.startMessage();
+      writeValues(values, schema);
+      recordConsumer.endMessage();
+    }
+
+    private void writeValues(List<?> values, GroupType type) {
+      List<Type> cols = type.getFields();
       for (int i = 0; i < cols.size(); ++i) {
         Object val = values.get(i);
-        // val.length() == 0 indicates a NULL value.
         if (val != null) {
-          String fieldName = cols.get(i).getPath()[0];
+          String fieldName = cols.get(i).getName();
           recordConsumer.startField(fieldName, i);
-          PrimitiveType.PrimitiveTypeName typeName =
-              cols.get(i).getPrimitiveType().getPrimitiveTypeName();
-          switch (typeName) {
-            case BOOLEAN:
-              recordConsumer.addBoolean((boolean) val);
-              break;
-            case FLOAT:
-              recordConsumer.addFloat((float) val);
-              break;
-            case DOUBLE:
-              recordConsumer.addDouble((double) val);
-              break;
-            case INT32:
-              recordConsumer.addInteger((int) val);
-              break;
-            case INT64:
-              recordConsumer.addLong((long) val);
-              break;
-            case BINARY:
-              Binary binVal =
-                  val instanceof String
-                      ? Binary.fromString((String) val)
-                      : Binary.fromConstantByteArray((byte[]) val);
-              recordConsumer.addBinary(binVal);
-              break;
-            case FIXED_LEN_BYTE_ARRAY:
-              Binary binary = Binary.fromConstantByteArray((byte[]) val);
-              recordConsumer.addBinary(binary);
-              break;
-            default:
-              throw new ParquetEncodingException(
-                  "Unsupported column type: " + cols.get(i).getPrimitiveType());
+          if (cols.get(i).isPrimitive()) {
+            PrimitiveType.PrimitiveTypeName typeName =
+                cols.get(i).asPrimitiveType().getPrimitiveTypeName();
+            switch (typeName) {
+              case BOOLEAN:
+                recordConsumer.addBoolean((boolean) val);
+                break;
+              case FLOAT:
+                recordConsumer.addFloat((float) val);
+                break;
+              case DOUBLE:
+                recordConsumer.addDouble((double) val);
+                break;
+              case INT32:
+                recordConsumer.addInteger((int) val);
+                break;
+              case INT64:
+                recordConsumer.addLong((long) val);
+                break;
+              case BINARY:
+                Binary binVal =
+                    val instanceof String
+                        ? Binary.fromString((String) val)
+                        : Binary.fromConstantByteArray((byte[]) val);
+                recordConsumer.addBinary(binVal);
+                break;
+              case FIXED_LEN_BYTE_ARRAY:
+                Binary binary = Binary.fromConstantByteArray((byte[]) val);
+                recordConsumer.addBinary(binary);
+                break;
+              default:
+                throw new ParquetEncodingException(
+                    "Unsupported column type: " + cols.get(i).asPrimitiveType());
+            }
+          } else {
+            if (cols.get(i).isRepetition(Type.Repetition.REPEATED)) {
+              /* List and Map */
+              for (Object o : values) {
+                recordConsumer.startGroup();
+                if (o != null) {
+                  if (o instanceof List) {
+                    writeValues((List<?>) o, cols.get(i).asGroupType());
+                  } else {
+                    throw new ParquetEncodingException(
+                        String.format("Field %s should be a 3 level list or map", fieldName));
+                  }
+                }
+                recordConsumer.endGroup();
+              }
+            } else {
+              /* Struct */
+              if (!(val instanceof List)) {
+                throw new ParquetEncodingException(
+                    String.format("Field %s should be a 2 level struct", fieldName));
+              }
+              recordConsumer.startGroup();
+              if (!((List<?>) val).isEmpty()) {
+                writeValues((List<?>) val, cols.get(i).asGroupType());
+              }
+              recordConsumer.endGroup();
+            }
           }
           recordConsumer.endField(fieldName, i);
         }
       }
-      recordConsumer.endMessage();
     }
   }
 }

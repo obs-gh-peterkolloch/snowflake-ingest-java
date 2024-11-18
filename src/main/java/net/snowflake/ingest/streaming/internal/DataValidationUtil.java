@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2021-2024 Snowflake Computing Inc. All rights reserved.
  */
 
 package net.snowflake.ingest.streaming.internal;
@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -626,8 +627,8 @@ class DataValidationUtil {
           ErrorCode.INVALID_VALUE_ROW,
           String.format(
               "Timestamp out of representable inclusive range of years between 1 and 9999,"
-                  + " rowIndex:%d",
-              insertRowIndex));
+                  + " rowIndex:%d, column:%s, value:%s",
+              insertRowIndex, columnName, offsetDateTime));
     }
     return new TimestampWrapper(offsetDateTime, scale);
   }
@@ -718,7 +719,13 @@ class DataValidationUtil {
         || input instanceof Long) {
       return BigDecimal.valueOf(((Number) input).longValue());
     } else if (input instanceof Float || input instanceof Double) {
-      return BigDecimal.valueOf(((Number) input).doubleValue());
+      try {
+        return BigDecimal.valueOf(((Number) input).doubleValue());
+      } catch (NumberFormatException e) {
+        /* NaN and infinity are not allowed */
+        throw valueFormatNotAllowedException(
+            columnName, "NUMBER", "Not a valid number", insertRowIndex);
+      }
     } else if (input instanceof String) {
       try {
         final String stringInput = ((String) input).trim();
@@ -760,8 +767,8 @@ class DataValidationUtil {
           ErrorCode.INVALID_VALUE_ROW,
           String.format(
               "Date out of representable inclusive range of years between -9999 and 9999,"
-                  + " rowIndex:%d",
-              insertRowIndex));
+                  + " rowIndex:%d, column:%s, value:%s",
+              insertRowIndex, columnName, offsetDateTime));
     }
 
     return Math.toIntExact(offsetDateTime.toLocalDate().toEpochDay());
@@ -958,6 +965,66 @@ class DataValidationUtil {
   }
 
   /**
+   * Validates and parses input Iceberg INT column. Allowed Java types:
+   *
+   * <ul>
+   *   <li>Number
+   *   <li>String
+   * </ul>
+   *
+   * @param columnName Column name, used in validation error messages
+   * @param input Object to validate and parse
+   * @param insertRowIndex Row index for error reporting
+   * @return Parsed integer
+   */
+  static int validateAndParseIcebergInt(String columnName, Object input, long insertRowIndex) {
+    BigDecimal roundedValue =
+        validateAndParseBigDecimal(columnName, input, insertRowIndex)
+            .setScale(0, RoundingMode.HALF_UP);
+    try {
+      return roundedValue.intValueExact();
+    } catch (ArithmeticException e) {
+      /* overflow */
+      throw new SFException(
+          ErrorCode.INVALID_VALUE_ROW,
+          String.format(
+              "Number out of representable inclusive range of integers between %d and %d,"
+                  + " rowIndex:%d, column:%s, value:%s",
+              Integer.MIN_VALUE, Integer.MAX_VALUE, insertRowIndex, columnName, input));
+    }
+  }
+
+  /**
+   * Validates and parses input Iceberg LONG column. Allowed Java types:
+   *
+   * <ul>
+   *   <li>Number
+   *   <li>String
+   * </ul>
+   *
+   * @param columnName Column name, used in validation error messages
+   * @param input Object to validate and parse
+   * @param insertRowIndex Row index for error reporting
+   * @return Parsed long
+   */
+  static long validateAndParseIcebergLong(String columnName, Object input, long insertRowIndex) {
+    BigDecimal roundedValue =
+        validateAndParseBigDecimal(columnName, input, insertRowIndex)
+            .setScale(0, RoundingMode.HALF_UP);
+    try {
+      return roundedValue.longValueExact();
+    } catch (ArithmeticException e) {
+      /* overflow */
+      throw new SFException(
+          ErrorCode.INVALID_VALUE_ROW,
+          String.format(
+              "Number out of representable inclusive range of integers between %d and %d,"
+                  + " rowIndex:%d, column:%s, value:%s",
+              Long.MIN_VALUE, Long.MAX_VALUE, insertRowIndex, columnName, input));
+    }
+  }
+
+  /**
    * Validate and parse input to integer output, 1=true, 0=false. String values converted to boolean
    * according to https://docs.snowflake.com/en/sql-reference/functions/to_boolean.html#usage-notes
    * Allowed Java types:
@@ -988,8 +1055,90 @@ class DataValidationUtil {
         insertRowIndex);
   }
 
+  /**
+   * Validate and cast Iceberg struct column to Map<String, Object>. Allowed Java type:
+   *
+   * <ul>
+   *   <li>Map<String, Object>
+   * </ul>
+   *
+   * @param columnName Column name, used in validation error messages
+   * @param input Object to validate and parse
+   * @param insertRowIndex Row index for error reporting
+   * @return Object cast to Map
+   */
+  static Map<String, ?> validateAndParseIcebergStruct(
+      String columnName, Object input, long insertRowIndex) {
+    if (!(input instanceof Map)) {
+      throw typeNotAllowedException(
+          columnName,
+          input.getClass(),
+          "STRUCT",
+          new String[] {"Map<String, Object>"},
+          insertRowIndex);
+    }
+    for (Object key : ((Map<?, ?>) input).keySet()) {
+      if (!(key instanceof String)) {
+        throw new SFException(
+            ErrorCode.INVALID_FORMAT_ROW,
+            String.format(
+                "Field name of struct typed column must be of type String, but found %s."
+                    + " rowIndex:%d, column:%s",
+                key.getClass().getName(), insertRowIndex, columnName));
+      }
+    }
+
+    return (Map<String, ?>) input;
+  }
+
+  /**
+   * Validate and parse Iceberg list column to an Iterable. Allowed Java type:
+   *
+   * <ul>
+   *   <li>Iterable
+   * </ul>
+   *
+   * @param columnName Column name, used in validation error messages
+   * @param input Object to validate and parse
+   * @param insertRowIndex Row index for error reporting
+   * @return Object cast to Iterable
+   */
+  static Iterable<?> validateAndParseIcebergList(
+      String columnName, Object input, long insertRowIndex) {
+    if (!(input instanceof Iterable)) {
+      throw typeNotAllowedException(
+          columnName, input.getClass(), "LIST", new String[] {"Iterable"}, insertRowIndex);
+    }
+    return (Iterable<?>) input;
+  }
+
+  /**
+   * Validate and parse Iceberg map column to a map. Allowed Java type:
+   *
+   * <ul>
+   *   <li>Map<Object, Object>
+   * </ul>
+   *
+   * @param columnName Column name, used in validation error messages
+   * @param input Object to validate and parse
+   * @param insertRowIndex Row index for error reporting
+   * @return Object cast to Map
+   */
+  static Map<?, ?> validateAndParseIcebergMap(
+      String columnName, Object input, long insertRowIndex) {
+    if (!(input instanceof Map)) {
+      throw typeNotAllowedException(
+          columnName, input.getClass(), "MAP", new String[] {"Map"}, insertRowIndex);
+    }
+    return (Map<?, ?>) input;
+  }
+
   static void checkValueInRange(
-      BigDecimal bigDecimalValue, int scale, int precision, final long insertRowIndex) {
+      String columnName,
+      BigDecimal bigDecimalValue,
+      int scale,
+      int precision,
+      final long insertRowIndex) {
     BigDecimal comparand =
         (precision >= scale) && (precision - scale) < POWER_10.length
             ? POWER_10[precision - scale]
@@ -998,8 +1147,20 @@ class DataValidationUtil {
       throw new SFException(
           ErrorCode.INVALID_FORMAT_ROW,
           String.format(
-              "Number out of representable exclusive range of (-1e%s..1e%s), rowIndex:%d",
-              precision - scale, precision - scale, insertRowIndex));
+              "Number out of representable exclusive range of (-1e%s..1e%s), rowIndex:%d,"
+                  + " column:%s, value:%s",
+              precision - scale, precision - scale, insertRowIndex, columnName, bigDecimalValue));
+    }
+  }
+
+  static void checkFixedLengthByteArray(
+      String columnName, byte[] bytes, int length, final long insertRowIndex) {
+    if (bytes.length != length) {
+      throw new SFException(
+          ErrorCode.INVALID_VALUE_ROW,
+          String.format(
+              "Binary length mismatch: expected:%d, actual:%d, rowIndex:%d, column:%s",
+              length, bytes.length, insertRowIndex, columnName));
     }
   }
 
@@ -1065,8 +1226,7 @@ class DataValidationUtil {
     return new SFException(
         ErrorCode.INVALID_VALUE_ROW,
         String.format(
-            "Value cannot be ingested into Snowflake column %s of type %s, rowIndex:%d, reason:"
-                + " %s",
+            "Value cannot be ingested into Snowflake column %s of type %s, rowIndex:%d, reason: %s",
             columnName, snowflakeType, rowIndex, reason));
   }
 

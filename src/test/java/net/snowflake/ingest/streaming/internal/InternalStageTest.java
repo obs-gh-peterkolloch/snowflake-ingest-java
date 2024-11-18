@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2021-2024 Snowflake Computing Inc. All rights reserved.
+ */
+
 package net.snowflake.ingest.streaming.internal;
 
 import static net.snowflake.client.core.Constants.CLOUD_STORAGE_CREDENTIALS_EXPIRED;
@@ -57,7 +61,7 @@ import org.powermock.modules.junit4.PowerMockRunner;
 
 @RunWith(PowerMockRunner.class)
 @PrepareForTest({TestUtils.class, HttpUtil.class, SnowflakeFileTransferAgent.class})
-public class StreamingIngestStorageTest {
+public class InternalStageTest {
 
   private final String prefix = "EXAMPLE_PREFIX";
 
@@ -130,23 +134,26 @@ public class StreamingIngestStorageTest {
 
     byte[] dataBytes = "Hello Upload".getBytes(StandardCharsets.UTF_8);
 
-    IStorageManager<?, ?> storageManager = Mockito.mock(IStorageManager.class);
+    InternalStageManager storageManager = Mockito.mock(InternalStageManager.class);
     Mockito.when(storageManager.getClientPrefix()).thenReturn("testPrefix");
 
-    StreamingIngestStorage<?, ?> stage =
-        new StreamingIngestStorage(
+    InternalStage stage =
+        new InternalStage(
             storageManager,
             "clientName",
-            new StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge(
+            "testPrefix",
+            InternalStageManager.NO_TABLE_REF,
+            new SnowflakeFileTransferMetadataWithAge(
                 originalMetadata, Optional.of(System.currentTimeMillis())),
-            null,
             1);
     PowerMockito.mockStatic(SnowflakeFileTransferAgent.class);
 
     final ArgumentCaptor<SnowflakeFileTransferConfig> captor =
         ArgumentCaptor.forClass(SnowflakeFileTransferConfig.class);
 
-    stage.putRemote("test/path", dataBytes);
+    stage.put(
+        new BlobPath("test/path" /* uploadPath */, "test/path" /* fileRegistrationPath */),
+        dataBytes);
     PowerMockito.verifyStatic(SnowflakeFileTransferAgent.class);
     SnowflakeFileTransferAgent.uploadWithoutConnection(captor.capture());
     SnowflakeFileTransferConfig capturedConfig = captor.getValue();
@@ -173,18 +180,20 @@ public class StreamingIngestStorageTest {
     String fullFilePath = "testOutput";
     String fileName = "putLocalOutput";
 
-    StreamingIngestStorage<?, ?> stage =
+    InternalStage stage =
         Mockito.spy(
-            new StreamingIngestStorage(
+            new InternalStage(
                 null,
                 "clientName",
-                new StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge(
+                "testPrefix",
+                InternalStageManager.NO_TABLE_REF,
+                new SnowflakeFileTransferMetadataWithAge(
                     fullFilePath, Optional.of(System.currentTimeMillis())),
-                null,
                 1));
     Mockito.doReturn(true).when(stage).isLocalFS();
 
-    stage.put(fileName, dataBytes);
+    stage.put(
+        new BlobPath(fileName /* uploadPath */, fileName /* fileRegistrationPath */), dataBytes);
     Path outputPath = Paths.get(fullFilePath, fileName);
     List<String> output = Files.readAllLines(outputPath);
     Assert.assertEquals(1, output.size());
@@ -201,16 +210,17 @@ public class StreamingIngestStorageTest {
 
     byte[] dataBytes = "Hello Upload".getBytes(StandardCharsets.UTF_8);
 
-    IStorageManager<?, ?> storageManager = Mockito.mock(IStorageManager.class);
+    InternalStageManager storageManager = Mockito.mock(InternalStageManager.class);
     Mockito.when(storageManager.getClientPrefix()).thenReturn("testPrefix");
 
-    StreamingIngestStorage<?, ?> stage =
-        new StreamingIngestStorage<>(
+    InternalStage stage =
+        new InternalStage(
             storageManager,
             "clientName",
-            new StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge(
+            "testPrefix",
+            InternalStageManager.NO_TABLE_REF,
+            new SnowflakeFileTransferMetadataWithAge(
                 originalMetadata, Optional.of(System.currentTimeMillis())),
-            null,
             maxUploadRetryCount);
     PowerMockito.mockStatic(SnowflakeFileTransferAgent.class);
     SnowflakeSQLException e =
@@ -222,7 +232,9 @@ public class StreamingIngestStorageTest {
         ArgumentCaptor.forClass(SnowflakeFileTransferConfig.class);
 
     try {
-      stage.putRemote("test/path", dataBytes);
+      stage.put(
+          new BlobPath("test/path" /* uploadPath */, "test/path" /* fileRegistrationPath */),
+          dataBytes);
       Assert.fail("Should not succeed");
     } catch (SFException ex) {
       // Expected behavior given mocked response
@@ -256,23 +268,26 @@ public class StreamingIngestStorageTest {
 
     byte[] dataBytes = "Hello Upload".getBytes(StandardCharsets.UTF_8);
 
-    IStorageManager<?, ?> storageManager = Mockito.mock(IStorageManager.class);
+    InternalStageManager storageManager = Mockito.mock(InternalStageManager.class);
     Mockito.when(storageManager.getClientPrefix()).thenReturn("testPrefix");
 
-    StreamingIngestStorage<?, ?> stage =
+    InternalStage stage =
         Mockito.spy(
-            new StreamingIngestStorage<>(
+            new InternalStage(
                 storageManager,
                 "clientName",
-                new StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge(
+                "testPrefix",
+                InternalStageManager.NO_TABLE_REF,
+                new SnowflakeFileTransferMetadataWithAge(
                     originalMetadata, Optional.of(System.currentTimeMillis())),
-                null,
                 1));
     PowerMockito.mockStatic(SnowflakeFileTransferAgent.class);
     SnowflakeFileTransferMetadataV1 metaMock = Mockito.mock(SnowflakeFileTransferMetadataV1.class);
 
     Mockito.doReturn(metaMock).when(stage).fetchSignedURL(Mockito.any());
-    stage.putRemote("test/path", dataBytes);
+    stage.put(
+        new BlobPath("test/path" /* uploadPath */, "test/path" /* fileRegistrationPath */),
+        dataBytes);
     SnowflakeFileTransferAgent.uploadWithoutConnection(Mockito.any());
     Mockito.verify(stage, times(1)).fetchSignedURL("test/path");
   }
@@ -294,19 +309,19 @@ public class StreamingIngestStorageTest {
 
     SnowflakeServiceClient snowflakeServiceClient =
         new SnowflakeServiceClient(mockClient, mockBuilder);
-    IStorageManager<?, ?> storageManager =
-        new InternalStageManager<>(true, "role", "client", snowflakeServiceClient);
+    InternalStageManager storageManager =
+        new InternalStageManager(true, "role", "client", snowflakeServiceClient);
 
-    StreamingIngestStorage<?, ?> stage =
-        new StreamingIngestStorage<>(
+    InternalStage stage =
+        new InternalStage(
             storageManager,
             "clientName",
-            (StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge) null,
-            null,
+            "testPrefix",
+            InternalStageManager.NO_TABLE_REF,
+            (SnowflakeFileTransferMetadataWithAge) null,
             1);
 
-    StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge metadataWithAge =
-        stage.refreshSnowflakeMetadata(true);
+    SnowflakeFileTransferMetadataWithAge metadataWithAge = stage.refreshSnowflakeMetadata(true);
 
     final ArgumentCaptor<String> endpointCaptor = ArgumentCaptor.forClass(String.class);
     final ArgumentCaptor<String> stringCaptor = ArgumentCaptor.forClass(String.class);
@@ -353,10 +368,10 @@ public class StreamingIngestStorageTest {
 
     SnowflakeServiceClient snowflakeServiceClient =
         new SnowflakeServiceClient(mockClient, mockBuilder);
-    IStorageManager<?, ?> storageManager =
-        new InternalStageManager<>(true, "role", "clientName", snowflakeServiceClient);
+    InternalStageManager storageManager =
+        new InternalStageManager(true, "role", "clientName", snowflakeServiceClient);
 
-    StreamingIngestStorage<?, ?> storage = storageManager.getStorage("");
+    InternalStage storage = storageManager.getStorage("");
     storage.refreshSnowflakeMetadata(true);
 
     Assert.assertEquals(prefix + "_" + deploymentId, storageManager.getClientPrefix());
@@ -385,8 +400,8 @@ public class StreamingIngestStorageTest {
     Mockito.when(mockClientInternal.getRole()).thenReturn("role");
     SnowflakeServiceClient snowflakeServiceClient =
         new SnowflakeServiceClient(mockClient, mockBuilder);
-    IStorageManager<?, ?> storageManager =
-        new InternalStageManager<>(true, "role", "client", snowflakeServiceClient);
+    InternalStageManager storageManager =
+        new InternalStageManager(true, "role", "client", snowflakeServiceClient);
     StatusLine mockStatusLine = Mockito.mock(StatusLine.class);
     Mockito.when(mockStatusLine.getStatusCode()).thenReturn(200);
 
@@ -394,12 +409,13 @@ public class StreamingIngestStorageTest {
     Mockito.when(mockResponse.getEntity()).thenReturn(createHttpEntity(exampleRemoteMetaResponse));
     Mockito.when(mockClient.execute(Mockito.any())).thenReturn(mockResponse);
 
-    StreamingIngestStorage<?, ?> stage =
-        new StreamingIngestStorage(
+    InternalStage stage =
+        new InternalStage(
             storageManager,
             "clientName",
-            (StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge) null,
-            null,
+            "testPrefix",
+            InternalStageManager.NO_TABLE_REF,
+            (SnowflakeFileTransferMetadataWithAge) null,
             1);
 
     SnowflakeFileTransferMetadataV1 metadata = stage.fetchSignedURL("path/fileName");
@@ -431,8 +447,8 @@ public class StreamingIngestStorageTest {
     Mockito.when(mockClientInternal.getRole()).thenReturn("role");
     SnowflakeServiceClient snowflakeServiceClient =
         new SnowflakeServiceClient(mockClient, mockBuilder);
-    IStorageManager<?, ?> storageManager =
-        new InternalStageManager<>(true, "role", "client", snowflakeServiceClient);
+    InternalStageManager storageManager =
+        new InternalStageManager(true, "role", "client", snowflakeServiceClient);
     StatusLine mockStatusLine = Mockito.mock(StatusLine.class);
     Mockito.when(mockStatusLine.getStatusCode()).thenReturn(200);
 
@@ -440,12 +456,13 @@ public class StreamingIngestStorageTest {
     Mockito.when(mockResponse.getEntity()).thenReturn(createHttpEntity(exampleRemoteMetaResponse));
     Mockito.when(mockClient.execute(Mockito.any())).thenReturn(mockResponse);
 
-    StreamingIngestStorage<?, ?> stage =
-        new StreamingIngestStorage<>(
+    InternalStage stage =
+        new InternalStage(
             storageManager,
             "clientName",
-            (StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge) null,
-            null,
+            "testPrefix",
+            InternalStageManager.NO_TABLE_REF,
+            (SnowflakeFileTransferMetadataWithAge) null,
             1);
 
     ThreadFactory buildUploadThreadFactory =
@@ -457,7 +474,7 @@ public class StreamingIngestStorageTest {
     workers.submit(
         () -> {
           try {
-            stage.refreshSnowflakeMetadata();
+            stage.refreshSnowflakeMetadata(false);
           } catch (Exception e) {
             throw new RuntimeException(e);
           }
@@ -465,13 +482,14 @@ public class StreamingIngestStorageTest {
     workers.submit(
         () -> {
           try {
-            stage.refreshSnowflakeMetadata();
+            stage.refreshSnowflakeMetadata(false);
           } catch (Exception e) {
             throw new RuntimeException(e);
           }
         });
+    workers.shutdown();
 
-    workers.awaitTermination(150, TimeUnit.MILLISECONDS);
+    Assert.assertTrue(workers.awaitTermination(1, TimeUnit.SECONDS));
 
     Mockito.verify(mockClient).execute(Mockito.any());
   }
@@ -574,16 +592,17 @@ public class StreamingIngestStorageTest {
 
     byte[] dataBytes = "Hello Upload".getBytes(StandardCharsets.UTF_8);
 
-    IStorageManager<?, ?> storageManager = Mockito.mock(IStorageManager.class);
+    InternalStageManager storageManager = Mockito.mock(InternalStageManager.class);
     Mockito.when(storageManager.getClientPrefix()).thenReturn("testPrefix");
 
-    StreamingIngestStorage<?, ?> stage =
-        new StreamingIngestStorage<>(
+    InternalStage stage =
+        new InternalStage(
             storageManager,
             "clientName",
-            new StreamingIngestStorage.SnowflakeFileTransferMetadataWithAge(
+            "testPrefix",
+            InternalStageManager.NO_TABLE_REF,
+            new SnowflakeFileTransferMetadataWithAge(
                 originalMetadata, Optional.of(System.currentTimeMillis())),
-            null,
             maxUploadRetryCount);
     PowerMockito.mockStatic(SnowflakeFileTransferAgent.class);
     SnowflakeSQLException e =
@@ -607,7 +626,9 @@ public class StreamingIngestStorageTest {
     final ArgumentCaptor<SnowflakeFileTransferConfig> captor =
         ArgumentCaptor.forClass(SnowflakeFileTransferConfig.class);
 
-    stage.putRemote("test/path", dataBytes);
+    stage.put(
+        new BlobPath("test/path" /* uploadPath */, "test/path" /* fileRegistrationPath */),
+        dataBytes);
 
     PowerMockito.verifyStatic(SnowflakeFileTransferAgent.class, times(maxUploadRetryCount));
     SnowflakeFileTransferAgent.uploadWithoutConnection(captor.capture());

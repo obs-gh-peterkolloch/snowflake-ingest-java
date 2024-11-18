@@ -1,38 +1,35 @@
+/*
+ * Copyright (c) 2024 Snowflake Computing Inc. All rights reserved.
+ */
+
 package net.snowflake.ingest.streaming.internal.datatypes;
 
-import static net.snowflake.ingest.utils.Constants.ROLE;
-import static net.snowflake.ingest.utils.ParameterProvider.BDEC_PARQUET_COMPRESSION_ALGORITHM;
-
+import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Properties;
 import java.util.UUID;
 import java.util.function.Predicate;
 import net.snowflake.ingest.TestUtils;
 import net.snowflake.ingest.streaming.OpenChannelRequest;
 import net.snowflake.ingest.streaming.SnowflakeStreamingIngestChannel;
 import net.snowflake.ingest.streaming.SnowflakeStreamingIngestClient;
-import net.snowflake.ingest.streaming.SnowflakeStreamingIngestClientFactory;
 import net.snowflake.ingest.utils.Constants;
 import net.snowflake.ingest.utils.SFException;
+import org.assertj.core.api.Assertions;
 import org.junit.After;
 import org.junit.Assert;
-import org.junit.Before;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
-import org.junit.runners.Parameterized.Parameters;
 
-@RunWith(Parameterized.class)
 public abstract class AbstractDataTypeTest {
   private static final String SOURCE_COLUMN_NAME = "source";
   private static final String VALUE_COLUMN_NAME = "value";
@@ -48,6 +45,8 @@ public abstract class AbstractDataTypeTest {
 
   protected static BigDecimal MAX_ALLOWED_BIG_DECIMAL = new BigDecimal(MAX_ALLOWED_BIG_INTEGER);
   protected static BigDecimal MIN_ALLOWED_BIG_DECIMAL = new BigDecimal(MIN_ALLOWED_BIG_INTEGER);
+  protected static final ObjectMapper objectMapper =
+      JsonMapper.builder().enable(JsonReadFeature.ALLOW_BACKSLASH_ESCAPING_ANY_CHARACTER).build();
 
   protected Connection conn;
   private String databaseName;
@@ -59,32 +58,29 @@ public abstract class AbstractDataTypeTest {
   private Optional<ZoneId> defaultTimezone = Optional.empty();
 
   private String schemaName = "PUBLIC";
-  private SnowflakeStreamingIngestClient client;
-  private static final ObjectMapper objectMapper = new ObjectMapper();
+  protected SnowflakeStreamingIngestClient client = null;
+  protected Boolean enableIcebergStreaming = null;
+  protected String compressionAlgorithm = null;
+  protected Constants.IcebergSerializationPolicy serializationPolicy = null;
 
-  @Parameters(name = "{index}: {0}")
-  public static Object[] compressionAlgorithms() {
-    return new Object[] {"GZIP", "ZSTD"};
-  }
-
-  @Parameter public String compressionAlgorithm;
-
-  @Before
-  public void before() throws Exception {
-    databaseName = String.format("SDK_DATATYPE_COMPATIBILITY_IT_%s", getRandomIdentifier());
-    conn = TestUtils.getConnection(true);
-    conn.createStatement().execute(String.format("create or replace database %s;", databaseName));
-    conn.createStatement().execute(String.format("use database %s;", databaseName));
-    conn.createStatement().execute(String.format("use schema %s;", schemaName));
-
-    conn.createStatement().execute(String.format("use warehouse %s;", TestUtils.getWarehouse()));
-
-    Properties props = TestUtils.getProperties(Constants.BdecVersion.THREE, false);
-    if (props.getProperty(ROLE).equals("DEFAULT_ROLE")) {
-      props.setProperty(ROLE, "ACCOUNTADMIN");
-    }
-    props.setProperty(BDEC_PARQUET_COMPRESSION_ALGORITHM, compressionAlgorithm);
-    client = SnowflakeStreamingIngestClientFactory.builder("client1").setProperties(props).build();
+  protected void setUp(
+      boolean enableIcebergStreaming,
+      String compressionAlgorithm,
+      Constants.IcebergSerializationPolicy serializationPolicy)
+      throws Exception {
+    this.enableIcebergStreaming = enableIcebergStreaming;
+    this.compressionAlgorithm = compressionAlgorithm;
+    this.serializationPolicy = serializationPolicy;
+    this.databaseName = String.format("SDK_DATATYPE_COMPATIBILITY_IT_%s", getRandomIdentifier());
+    this.conn = TestUtils.getConnection(true);
+    this.client =
+        TestUtils.setUp(
+            conn,
+            databaseName,
+            schemaName,
+            enableIcebergStreaming,
+            compressionAlgorithm,
+            serializationPolicy);
   }
 
   @After
@@ -112,7 +108,33 @@ public abstract class AbstractDataTypeTest {
             String.format(
                 "create or replace table %s (%s string, %s %s)",
                 tableName, SOURCE_COLUMN_NAME, VALUE_COLUMN_NAME, dataType));
+
     return tableName;
+  }
+
+  protected String createIcebergTable(String dataType) throws SQLException {
+    String tableName = getRandomIdentifier();
+    String baseLocation = String.format("SDK_IT/%s/%s", databaseName, tableName);
+    conn.createStatement()
+        .execute(
+            String.format(
+                "create or replace iceberg table %s (%s string, %s %s) %s",
+                tableName,
+                SOURCE_COLUMN_NAME,
+                VALUE_COLUMN_NAME,
+                dataType,
+                getIcebergTableConfig(tableName)));
+
+    return tableName;
+  }
+
+  protected String getIcebergTableConfig(String tableName) {
+    String baseLocation = String.format("SDK_IT/%s/%s", databaseName, tableName);
+    return String.format(
+        "catalog = 'SNOWFLAKE' "
+            + "external_volume = 'streaming_ingest' "
+            + "base_location = '%s';",
+        baseLocation);
   }
 
   protected String getRandomIdentifier() {
@@ -196,7 +218,26 @@ public abstract class AbstractDataTypeTest {
    */
   <VALUE> void testIngestion(String dataType, VALUE expectedValue, Provider<VALUE> selectProvider)
       throws Exception {
-    ingestAndAssert(dataType, expectedValue, null, expectedValue, null, selectProvider);
+    ingestAndAssert(
+        dataType,
+        expectedValue,
+        null,
+        expectedValue,
+        null,
+        selectProvider,
+        false /* enableIcebergStreaming */);
+  }
+
+  <VALUE> void testIcebergIngestion(
+      String dataType, VALUE expectedValue, Provider<VALUE> selectProvider) throws Exception {
+    ingestAndAssert(
+        dataType,
+        expectedValue,
+        null,
+        expectedValue,
+        null,
+        selectProvider,
+        true /* enableIcebergStreaming */);
   }
 
   /**
@@ -209,7 +250,30 @@ public abstract class AbstractDataTypeTest {
       JDBC_READ expectedValue,
       Provider<JDBC_READ> selectProvider)
       throws Exception {
-    ingestAndAssert(dataType, streamingIngestWriteValue, null, expectedValue, null, selectProvider);
+    ingestAndAssert(
+        dataType,
+        streamingIngestWriteValue,
+        null,
+        expectedValue,
+        null,
+        selectProvider,
+        false /* enableIcebergStreaming */);
+  }
+
+  <STREAMING_INGEST_WRITE, JDBC_READ> void testIcebergIngestion(
+      String dataType,
+      STREAMING_INGEST_WRITE streamingIngestWriteValue,
+      JDBC_READ expectedValue,
+      Provider<JDBC_READ> selectProvider)
+      throws Exception {
+    ingestAndAssert(
+        dataType,
+        streamingIngestWriteValue,
+        null,
+        expectedValue,
+        null,
+        selectProvider,
+        true /* enableIcebergStreaming */);
   }
 
   /**
@@ -218,7 +282,8 @@ public abstract class AbstractDataTypeTest {
    */
   <T> void testJdbcTypeCompatibility(String typeName, T value, Provider<T> provider)
       throws Exception {
-    ingestAndAssert(typeName, value, value, value, provider, provider);
+    ingestAndAssert(
+        typeName, value, value, value, provider, provider, false /* enableIcebergStreaming */);
   }
 
   /** Simplified version where write value for streaming ingest and JDBC are the same */
@@ -230,22 +295,29 @@ public abstract class AbstractDataTypeTest {
       Provider<READ> selectProvider)
       throws Exception {
     ingestAndAssert(
-        typeName, writeValue, writeValue, expectedValue, insertProvider, selectProvider);
+        typeName,
+        writeValue,
+        writeValue,
+        expectedValue,
+        insertProvider,
+        selectProvider,
+        false /* enableIcebergStreaming */);
   }
 
   /**
    * Ingests values with streaming ingest and JDBC driver, SELECTs them back with WHERE condition
    * and asserts they exist.
    *
+   * @param <STREAMING_INGEST_WRITE> Type ingested by streaming ingest
+   * @param <JDBC_WRITE> Type written by JDBC driver
+   * @param <JDBC_READ> Type read by JDBC driver
    * @param dataType Snowflake data type
    * @param streamingIngestWriteValue Value ingested by streaming ingest
    * @param jdbcWriteValue Value written by JDBC driver
    * @param expectedValue Expected value received from JDBC driver SELECT
    * @param insertProvider JDBC parameter provider for INSERT
    * @param selectProvider JDBC parameter provider for SELECT ... WHERE
-   * @param <STREAMING_INGEST_WRITE> Type ingested by streaming ingest
-   * @param <JDBC_WRITE> Type written by JDBC driver
-   * @param <JDBC_READ> Type read by JDBC driver
+   * @param enableIcebergStreaming whether the table is an iceberg table
    */
   <STREAMING_INGEST_WRITE, JDBC_WRITE, JDBC_READ> void ingestAndAssert(
       String dataType,
@@ -253,13 +325,15 @@ public abstract class AbstractDataTypeTest {
       JDBC_WRITE jdbcWriteValue,
       JDBC_READ expectedValue,
       Provider<JDBC_WRITE> insertProvider,
-      Provider<JDBC_READ> selectProvider)
+      Provider<JDBC_READ> selectProvider,
+      boolean enableIcebergStreaming)
       throws Exception {
     if (jdbcWriteValue == null ^ insertProvider == null)
       throw new IllegalArgumentException(
           "jdbcWriteValue and provider must be both null or not null");
     boolean insertAlsoWithJdbc = jdbcWriteValue != null;
-    String tableName = createTable(dataType);
+    String tableName =
+        enableIcebergStreaming ? createIcebergTable(dataType) : createTable(dataType);
     String offsetToken = UUID.randomUUID().toString();
 
     // Insert using JDBC
@@ -287,13 +361,13 @@ public abstract class AbstractDataTypeTest {
     if (expectedValue == null) {
       selectQuery =
           String.format("select count(*) from %s where %s is NULL", tableName, VALUE_COLUMN_NAME);
-    } else if (dataType.startsWith("TIMESTAMP_")) {
+    } else if (dataType.toUpperCase().startsWith("TIMESTAMP")) {
       selectQuery =
           String.format(
               "select count(*) from %s where to_varchar(%s, 'YYYY-MM-DD HH24:MI:SS.FF TZHTZM') ="
                   + " ?;",
               tableName, VALUE_COLUMN_NAME);
-    } else if (dataType.startsWith("TIME")) {
+    } else if (dataType.toUpperCase().startsWith("TIME")) {
       selectQuery =
           String.format(
               "select count(*) from %s where to_varchar(%s, 'HH24:MI:SS.FF TZHTZM') = ?;",
@@ -310,7 +384,9 @@ public abstract class AbstractDataTypeTest {
     Assert.assertTrue(resultSet.next());
     int count = resultSet.getInt(1);
     Assert.assertEquals(insertAlsoWithJdbc ? 2 : 1, count);
-    migrateTable(tableName); // migration should always succeed
+    if (!enableIcebergStreaming) {
+      migrateTable(tableName); // migration should always succeed
+    }
   }
 
   <STREAMING_INGEST_WRITE> void assertVariant(
@@ -426,5 +502,44 @@ public abstract class AbstractDataTypeTest {
 
     TestUtils.waitForOffset(channel, offsetToken);
     migrateTable(tableName); // migration should always succeed
+  }
+
+  protected void testIcebergIngestAndQuery(
+      String dataType,
+      Iterable<Object> values,
+      String queryTemplate,
+      Iterable<Object> expectedValues)
+      throws Exception {
+    String tableName = createIcebergTable(dataType);
+    SnowflakeStreamingIngestChannel channel = openChannel(tableName);
+    String offsetToken = null;
+    for (Object value : values) {
+      offsetToken = UUID.randomUUID().toString();
+      channel.insertRow(createStreamingIngestRow(value), offsetToken);
+    }
+    TestUtils.waitForOffset(channel, offsetToken);
+
+    String verificationQuery =
+        queryTemplate.replace("{tableName}", tableName).replace("{columnName}", VALUE_COLUMN_NAME);
+    ResultSet resultSet = conn.createStatement().executeQuery(verificationQuery);
+
+    for (Object expectedValue : expectedValues) {
+      Assertions.assertThat(resultSet.next()).isTrue();
+      Object res = resultSet.getObject(1);
+      if (expectedValue instanceof BigDecimal) {
+        Assertions.assertThat(res)
+            .usingComparatorForType(BigDecimal::compareTo, BigDecimal.class)
+            .usingRecursiveComparison()
+            .isEqualTo(expectedValue);
+      } else if (expectedValue instanceof Map) {
+        Assertions.assertThat(objectMapper.readTree((String) res))
+            .isEqualTo(objectMapper.valueToTree(expectedValue));
+      } else if (expectedValue instanceof Timestamp) {
+        Assertions.assertThat(res.toString()).isEqualTo(expectedValue.toString());
+      } else {
+        Assertions.assertThat(res).isEqualTo(expectedValue);
+      }
+    }
+    Assertions.assertThat(resultSet.next()).isFalse();
   }
 }

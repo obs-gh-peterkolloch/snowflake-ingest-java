@@ -10,3 +10,4 @@ src/test/resources/log4j.properties
 testOutput/
 .cache/
 bazel-*
+/dependency-reduced-pom.xml

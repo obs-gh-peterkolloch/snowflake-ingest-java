@@ -11,6 +11,7 @@ import static net.snowflake.ingest.utils.Constants.BLOB_FILE_SIZE_SIZE_IN_BYTES;
 import static net.snowflake.ingest.utils.Constants.BLOB_NO_HEADER;
 import static net.snowflake.ingest.utils.Constants.BLOB_TAG_SIZE_IN_BYTES;
 import static net.snowflake.ingest.utils.Constants.BLOB_VERSION_SIZE_IN_BYTES;
+import static net.snowflake.ingest.utils.Utils.getParquetFooterSize;
 import static net.snowflake.ingest.utils.Utils.toByteArray;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -23,14 +24,17 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.CRC32;
 import javax.crypto.BadPaddingException;
 import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 import net.snowflake.ingest.utils.Constants;
 import net.snowflake.ingest.utils.Cryptor;
+import net.snowflake.ingest.utils.ErrorCode;
 import net.snowflake.ingest.utils.Logging;
 import net.snowflake.ingest.utils.Pair;
+import net.snowflake.ingest.utils.SFException;
 import org.apache.commons.codec.binary.Hex;
 
 /**
@@ -61,14 +65,14 @@ class BlobBuilder {
    * @param blobData All the data for one blob. Assumes that all ChannelData in the inner List
    *     belongs to the same table. Will error if this is not the case
    * @param bdecVersion version of blob
-   * @param encrypt If the output chunk is encrypted or not
    * @return {@link Blob} data
    */
   static <T> Blob constructBlobAndMetadata(
       String filePath,
       List<List<ChannelData<T>>> blobData,
       Constants.BdecVersion bdecVersion,
-      boolean encrypt)
+      InternalParameterProvider internalParameterProvider,
+      Map<FullyQualifiedTableName, EncryptionKey> encryptionKeysPerTable)
       throws IOException, NoSuchPaddingException, NoSuchAlgorithmException,
           InvalidAlgorithmParameterException, InvalidKeyException, IllegalBlockSizeException,
           BadPaddingException {
@@ -82,16 +86,29 @@ class BlobBuilder {
       ChannelFlushContext firstChannelFlushContext =
           channelsDataPerTable.get(0).getChannelContext();
 
+      final EncryptionKey encryptionKey =
+          encryptionKeysPerTable.getOrDefault(
+              new FullyQualifiedTableName(
+                  firstChannelFlushContext.getDbName(),
+                  firstChannelFlushContext.getSchemaName(),
+                  firstChannelFlushContext.getTableName()),
+              new EncryptionKey(
+                  firstChannelFlushContext.getDbName(),
+                  firstChannelFlushContext.getSchemaName(),
+                  firstChannelFlushContext.getTableName(),
+                  firstChannelFlushContext.getEncryptionKey(),
+                  firstChannelFlushContext.getEncryptionKeyId()));
+
       Flusher<T> flusher = channelsDataPerTable.get(0).createFlusher();
       Flusher.SerializationResult serializedChunk =
-          flusher.serialize(channelsDataPerTable, filePath);
+          flusher.serialize(channelsDataPerTable, filePath, curDataSize);
 
       if (!serializedChunk.channelsMetadataList.isEmpty()) {
         final byte[] compressedChunkData;
         final int chunkLength;
         final int compressedChunkDataSize;
 
-        if (encrypt) {
+        if (internalParameterProvider.getEnableChunkEncryption()) {
           Pair<byte[], Integer> paddedChunk =
               padChunk(serializedChunk.chunkData, Constants.ENCRYPTION_ALGORITHM_BLOCK_SIZE_BYTES);
           byte[] paddedChunkData = paddedChunk.getFirst();
@@ -103,9 +120,10 @@ class BlobBuilder {
           // to align with decryption on the Snowflake query path.
           // TODO: address alignment for the header SNOW-557866
           long iv = curDataSize / Constants.ENCRYPTION_ALGORITHM_BLOCK_SIZE_BYTES;
+
           compressedChunkData =
-              Cryptor.encrypt(
-                  paddedChunkData, firstChannelFlushContext.getEncryptionKey(), filePath, iv);
+              Cryptor.encrypt(paddedChunkData, encryptionKey.getEncryptionKey(), filePath, iv);
+
           compressedChunkDataSize = compressedChunkData.length;
         } else {
           compressedChunkData = serializedChunk.chunkData.toByteArray();
@@ -118,7 +136,7 @@ class BlobBuilder {
 
         // Create chunk metadata
         long startOffset = curDataSize;
-        ChunkMetadata chunkMetadata =
+        ChunkMetadata.Builder chunkMetadataBuilder =
             ChunkMetadata.builder()
                 .setOwningTableFromChannelContext(firstChannelFlushContext)
                 // The start offset will be updated later in BlobBuilder#build to include the blob
@@ -130,13 +148,35 @@ class BlobBuilder {
                 .setUncompressedChunkLength((int) serializedChunk.chunkEstimatedUncompressedSize)
                 .setChannelList(serializedChunk.channelsMetadataList)
                 .setChunkMD5(md5)
-                .setEncryptionKeyId(firstChannelFlushContext.getEncryptionKeyId())
+                .setEncryptionKeyId(encryptionKey.getEncryptionKeyId())
                 .setEpInfo(
                     AbstractRowBuffer.buildEpInfoFromStats(
-                        serializedChunk.rowCount, serializedChunk.columnEpStatsMapCombined))
+                        serializedChunk.rowCount,
+                        serializedChunk.columnEpStatsMapCombined,
+                        internalParameterProvider.setAllDefaultValuesInEp(),
+                        internalParameterProvider.isEnableDistinctValuesCount()))
                 .setFirstInsertTimeInMs(serializedChunk.chunkMinMaxInsertTimeInMs.getFirst())
-                .setLastInsertTimeInMs(serializedChunk.chunkMinMaxInsertTimeInMs.getSecond())
-                .build();
+                .setLastInsertTimeInMs(serializedChunk.chunkMinMaxInsertTimeInMs.getSecond());
+
+        if (internalParameterProvider.setIcebergSpecificFieldsInEp()) {
+          if (internalParameterProvider.getEnableChunkEncryption()) {
+            /* metadata size computation only works when encryption and padding is off */
+            throw new SFException(
+                ErrorCode.INTERNAL_ERROR,
+                "Metadata size computation is only supported when encryption is enabled");
+          }
+          final long metadataSize = getParquetFooterSize(compressedChunkData);
+          final long extendedMetadataSize = serializedChunk.extendedMetadataSize;
+          chunkMetadataBuilder
+              .setMajorVersion(Constants.PARQUET_MAJOR_VERSION)
+              .setMinorVersion(Constants.PARQUET_MINOR_VERSION)
+              // set createdOn in seconds
+              .setCreatedOn(System.currentTimeMillis() / 1000)
+              .setMetadataSize(metadataSize)
+              .setExtendedMetadataSize(extendedMetadataSize);
+        }
+
+        ChunkMetadata chunkMetadata = chunkMetadataBuilder.build();
 
         // Add chunk metadata and data to the list
         chunksMetadataList.add(chunkMetadata);
@@ -147,7 +187,7 @@ class BlobBuilder {
         logger.logInfo(
             "Finish building chunk in blob={}, table={}, rowCount={}, startOffset={},"
                 + " estimatedUncompressedSize={}, chunkLength={}, compressedSize={},"
-                + " encryption={}, bdecVersion={}",
+                + " encrypt={}, bdecVersion={}",
             filePath,
             firstChannelFlushContext.getFullyQualifiedTableName(),
             serializedChunk.rowCount,
@@ -155,7 +195,7 @@ class BlobBuilder {
             serializedChunk.chunkEstimatedUncompressedSize,
             chunkLength,
             compressedChunkDataSize,
-            encrypt,
+            internalParameterProvider.getEnableChunkEncryption(),
             bdecVersion);
       }
     }
