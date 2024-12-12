@@ -46,6 +46,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueBoolean() {
     Type type =
         Types.primitive(PrimitiveTypeName.BOOLEAN, Repetition.OPTIONAL).id(1).named("BOOLEAN_COL");
@@ -72,6 +73,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueInt() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT32, Repetition.OPTIONAL).id(1).named("INT_COL");
@@ -97,6 +99,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueDecimalToInt() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT32, Repetition.OPTIONAL)
@@ -131,6 +134,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueDateToInt() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT32, Repetition.OPTIONAL)
@@ -159,6 +163,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueLong() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT64, Repetition.OPTIONAL).id(1).named("LONG_COL");
@@ -184,6 +189,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueDecimalToLong() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT64, Repetition.OPTIONAL)
@@ -218,6 +224,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueTimeToLong() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT64, Repetition.OPTIONAL)
@@ -246,6 +253,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueTimestampToLong() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT64, Repetition.OPTIONAL)
@@ -280,6 +288,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueTimestampTZToLong() {
     Type type =
         Types.primitive(PrimitiveTypeName.INT64, Repetition.OPTIONAL)
@@ -314,6 +323,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueFloat() {
     Type type =
         Types.primitive(PrimitiveTypeName.FLOAT, Repetition.OPTIONAL).id(1).named("FLOAT_COL");
@@ -339,6 +349,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueDouble() {
     Type type =
         Types.primitive(PrimitiveTypeName.DOUBLE, Repetition.OPTIONAL).id(1).named("DOUBLE_COL");
@@ -364,6 +375,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueBinary() {
     Type type =
         Types.primitive(PrimitiveTypeName.BINARY, Repetition.OPTIONAL).id(1).named("BINARY_COL");
@@ -391,6 +403,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueStringToBinary() {
     Type type =
         Types.primitive(PrimitiveTypeName.BINARY, Repetition.OPTIONAL)
@@ -423,6 +436,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueFixed() {
     Type type =
         Types.primitive(PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY, Repetition.OPTIONAL)
@@ -453,6 +467,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseValueDecimalToFixed() {
     Type type =
         Types.primitive(PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY, Repetition.OPTIONAL)
@@ -484,6 +499,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseList() throws JsonProcessingException {
     Type list =
         Types.optionalList()
@@ -569,6 +585,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseMap() throws JsonProcessingException {
     Type map =
         Types.optionalMap()
@@ -674,6 +691,7 @@ public class IcebergParquetValueParserTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void parseStruct() throws JsonProcessingException {
     Type struct =
         Types.optionalGroup()
@@ -849,6 +867,7 @@ public class IcebergParquetValueParserTest {
     return null;
   }
 
+  @SuppressWarnings("DoubleBraceInitialization")
   private static Pair<Object, Object> generateNestedValueAndReference(int depth) {
     if (depth == 0) {
       return new Pair<>(1, 1);

@@ -103,6 +103,7 @@ public class InsertRowsBenchmarkTest {
     client.close();
   }
 
+  @Test
   @Benchmark
   public void testInsertRow() {
     Map<String, Object> row = new HashMap<>();

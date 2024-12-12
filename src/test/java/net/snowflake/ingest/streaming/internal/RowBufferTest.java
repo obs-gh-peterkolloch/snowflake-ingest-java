@@ -2371,6 +2371,7 @@ public class RowBufferTest {
     testStructuredStatsE2EHelper(createTestBuffer(OpenChannelRequest.OnErrorOption.SKIP_BATCH));
   }
 
+  @SuppressWarnings("DoubleBraceInitialization")
   private void testStructuredStatsE2EHelper(AbstractRowBuffer<?> rowBuffer) {
     rowBuffer.setupSchema(createStrcuturedDataTypeSchema());
     Map<String, Object> row1 = new HashMap<>();

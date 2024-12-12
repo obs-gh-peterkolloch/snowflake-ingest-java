@@ -10,6 +10,7 @@ import static net.snowflake.ingest.utils.Constants.MAX_THREAD_COUNT;
 import static net.snowflake.ingest.utils.Constants.THREAD_SHUTDOWN_TIMEOUT_IN_SEC;
 import static net.snowflake.ingest.utils.Utils.getStackTrace;
 
+import com.codahale.metrics.Histogram;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 import com.google.common.annotations.VisibleForTesting;
@@ -681,7 +682,10 @@ class FlushService<T> {
 
       for (ChunkMetadata chunkMetadata: metadata) {
         String metricName = tableBlobMetricName(chunkMetadata.getDBName(), chunkMetadata.getSchemaName(), chunkMetadata.getTableName());
-        this.owningClient.metrics.histogram(metricName).update(chunkMetadata.getChunkLength());
+        MetricRegistry r = this.owningClient.metrics;
+        if (r != null) {
+          r.histogram(metricName).update(chunkMetadata.getChunkLength());
+        }
       }
     }
 

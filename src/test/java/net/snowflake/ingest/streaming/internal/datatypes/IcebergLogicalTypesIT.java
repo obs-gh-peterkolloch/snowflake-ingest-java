@@ -131,6 +131,7 @@ public class IcebergLogicalTypesIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("ArraysAsListPrimitiveArray")
   public void testBinaryAndQueries() throws Exception {
     testIcebergIngestAndQuery(
         "binary",
@@ -231,6 +232,7 @@ public class IcebergLogicalTypesIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("ArraysAsListPrimitiveArray")
   public void testFixedLenByteArrayAndQueries() throws Exception {
     testIcebergIngestAndQuery(
         "fixed(3)",

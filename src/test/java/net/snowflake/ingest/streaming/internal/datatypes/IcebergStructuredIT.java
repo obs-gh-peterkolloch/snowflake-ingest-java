@@ -53,6 +53,7 @@ public class IcebergStructuredIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testStructuredDataType() throws Exception {
     assertStructuredDataType(
         "object(a int, b string, c boolean)", "{\"a\": 1, \"b\": \"test\", \"c\": true}");
@@ -251,6 +252,7 @@ public class IcebergStructuredIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testExtraFields() throws SQLException {
     String tableName = createIcebergTable("object(k1 int)");
     SnowflakeStreamingIngestChannel channel =
@@ -287,6 +289,7 @@ public class IcebergStructuredIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testNestedExtraFields() throws SQLException {
     String tableName =
         createIcebergTable(
@@ -347,6 +350,7 @@ public class IcebergStructuredIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testMissingFields() throws SQLException {
     String tableName = createIcebergTable("object(k1 int not null, k2 int not null) not null");
     SnowflakeStreamingIngestChannel channel =
@@ -381,6 +385,7 @@ public class IcebergStructuredIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testMultipleErrors() throws Exception {
     String tableName =
         createIcebergTable(
