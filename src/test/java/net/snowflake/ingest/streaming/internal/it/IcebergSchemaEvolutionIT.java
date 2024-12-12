@@ -107,6 +107,7 @@ public class IcebergSchemaEvolutionIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testStructType() throws Exception {
     String tableName = createIcebergTableWithColumns("id int, object_col object(a int)");
     SnowflakeStreamingIngestChannel channel = openChannel(tableName);
@@ -164,6 +165,7 @@ public class IcebergSchemaEvolutionIT extends AbstractDataTypeTest {
   }
 
   @Test
+  @SuppressWarnings("DoubleBraceInitialization")
   public void testNestedDataType() throws Exception {
     String tableName =
         createIcebergTableWithColumns(

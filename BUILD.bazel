@@ -98,6 +98,7 @@ make_all_unit_tests(
         "@snowpipe_maven//:io_dropwizard_metrics_metrics_jmx",
         "@snowpipe_maven//:io_dropwizard_metrics_metrics_jvm",
         "@snowpipe_maven//:junit_junit",
+        "@snowpipe_maven//:com_google_guava_guava",
         "@snowpipe_maven//:net_snowflake_snowflake_jdbc",
         "@snowpipe_maven//:org_apache_commons_commons_compress",
         "@snowpipe_maven//:org_apache_commons_commons_configuration2",
