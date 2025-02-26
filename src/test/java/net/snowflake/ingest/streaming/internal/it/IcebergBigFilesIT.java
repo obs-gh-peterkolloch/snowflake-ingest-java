@@ -217,7 +217,7 @@ public class IcebergBigFilesIT {
     ResultSet rs2 =
         conn.createStatement().executeQuery(String.format("select hash_agg(*) from %s", tableName));
     assertThat(rs2.next()).isTrue();
-    assertThat(rs2.getLong(1)).isNotNull();
+    assertThat(rs2.getLong(1)).isGreaterThan(0);
     assertThat(rs2.next()).isFalse();
   }
 }
