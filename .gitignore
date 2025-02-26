@@ -1,6 +1,7 @@
 .DS_Store
 *.iml
 .idea
+.bazelbsp
 target/
 profile.json
 profile.properties
